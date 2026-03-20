@@ -1,0 +1,47 @@
+.mail-view {
+  display: flex;
+  height: 100%;
+}
+
+.mail-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.mail-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mail-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.mail-list-pane {
+  width: 340px;
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.mail-detail-pane {
+  flex: 1;
+  overflow: hidden;
+}
+
+@media (max-width: 768px) {
+  .mail-view {
+    flex-direction: column;
+  }
+
+  .mail-list-pane {
+    width: 100%;
+    border-right: none;
+    max-height: 40vh;
+  }
+}

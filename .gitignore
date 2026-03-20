@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.db
+*.log
+.portal-token
+.aicivcal-calendar-id
+.agentcal-fired-ids.json
+.env
+__pycache__/
+*.pyc
+.DS_Store
+reaction-sentiment.jsonl
+portal-chat.jsonl
+scheduled_tasks.json
+scheduled_tasks.json.migrated
+*.tmp
