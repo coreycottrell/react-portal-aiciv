@@ -25,13 +25,35 @@ const REACTION_EMOJIS: { emoji: string; name: string; weight: number }[] = [
   { emoji: '\u{1F610}', name: 'neutral', weight: 0 },
 ]
 
+// Extract fenced code blocks from message text
+interface CodeBlock {
+  language: string
+  content: string
+  fullMatch: string
+}
+
+function extractCodeBlocks(text: string): CodeBlock[] {
+  const regex = /```(\w+)?\n([\s\S]*?)```/g
+  const blocks: CodeBlock[] = []
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text)) !== null) {
+    blocks.push({
+      language: match[1] || 'code',
+      content: match[2].trimEnd(),
+      fullMatch: match[0],
+    })
+  }
+  return blocks
+}
+
 interface MessageBubbleProps {
   message: ChatMessage
   onReact: (emoji: string) => void
   highlight?: boolean
+  onPreviewArtifact?: (content: string, language: string) => void
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, onReact, highlight }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, onReact, highlight, onPreviewArtifact }: MessageBubbleProps) {
   const [showReactions, setShowReactions] = useState(false)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isUser = message.role === 'user'
@@ -49,6 +71,8 @@ export const MessageBubble = memo(function MessageBubble({ message, onReact, hig
       return [...prev, { emoji, weight }]
     })
   }
+
+  const codeBlocks = extractCodeBlocks(message.text)
 
   const toggleBookmark = () => {
     if (isBookmarked) {
@@ -97,6 +121,27 @@ export const MessageBubble = memo(function MessageBubble({ message, onReact, hig
             {message.text}
           </ReactMarkdown>
         </div>
+
+        {/* Artifact preview buttons */}
+        {codeBlocks.length > 0 && onPreviewArtifact && (
+          <div className="msg-preview-buttons">
+            {codeBlocks.map((block, i) => (
+              <button
+                key={i}
+                className="msg-preview-btn"
+                onClick={() => onPreviewArtifact(block.content, block.language)}
+                title={`Preview ${block.language} in side panel`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                </svg>
+                Preview{codeBlocks.length > 1 ? ` (${block.language})` : ''}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Reaction badges */}
         {localReactions.length > 0 && (

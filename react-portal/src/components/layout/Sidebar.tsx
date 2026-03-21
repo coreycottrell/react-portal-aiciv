@@ -14,6 +14,8 @@ const NAV_ITEMS = [
   { to: '/bookmarks', icon: '\u{1F4CC}', label: 'Bookmarks' },
   { to: '/context', icon: '\u{1F9E0}', label: 'Context' },
   { to: '/points', icon: '\u{2B50}', label: 'Points' },
+  { to: '/docs', icon: '\u{1F4D6}', label: 'Docs' },
+  { to: '/sheets', icon: '\u{1F4CA}', label: 'Sheets' },
   { to: '/status', icon: '\u{1F4CA}', label: 'Status' },
   { to: '/settings', icon: '\u{2699}\u{FE0F}', label: 'Settings' },
 ] as const

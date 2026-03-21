@@ -23,12 +23,15 @@
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 6px 12px;
+  padding: 8px 16px;
   color: var(--text-tertiary);
   text-decoration: none;
   font-size: 10px;
   font-weight: 500;
   transition: color var(--transition-fast);
+  background: none;
+  border: none;
+  cursor: pointer;
 }
 
 .mobile-nav-item:hover {
@@ -40,8 +43,9 @@
 }
 
 .mobile-nav-icon {
-  font-size: 20px;
+  font-size: 22px;
   position: relative;
+  line-height: 1;
 }
 
 .mobile-nav-badge {
@@ -63,4 +67,113 @@
 
 .mobile-nav-label {
   line-height: 1;
+}
+
+.mobile-nav-more-btn {
+  font-family: var(--font-sans);
+}
+
+/* ── Overlay ──────────────────────────────────────────── */
+
+.mobile-more-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 98;
+  animation: mobile-fade-in 150ms ease-out;
+}
+
+@media (max-width: 768px) {
+  .mobile-more-overlay {
+    display: block;
+  }
+}
+
+/* ── Slide-up sheet ───────────────────────────────────── */
+
+.mobile-more-sheet {
+  display: none;
+  position: fixed;
+  bottom: var(--mobile-nav-height);
+  left: 0;
+  right: 0;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 16px 16px 0 0;
+  z-index: 99;
+  padding: 8px 16px 16px;
+  animation: mobile-slide-up 200ms ease-out;
+}
+
+@media (max-width: 768px) {
+  .mobile-more-sheet {
+    display: block;
+  }
+}
+
+.mobile-more-handle {
+  width: 36px;
+  height: 4px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  margin: 0 auto 12px;
+}
+
+.mobile-more-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.mobile-more-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.mobile-more-item:hover,
+.mobile-more-item:active {
+  background: var(--bg-tertiary);
+  border-color: var(--accent-primary);
+  transform: scale(0.97);
+}
+
+.mobile-more-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.mobile-more-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.2;
+}
+
+/* ── Animations ───────────────────────────────────────── */
+
+@keyframes mobile-slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes mobile-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

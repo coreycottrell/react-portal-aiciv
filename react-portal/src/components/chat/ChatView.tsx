@@ -4,6 +4,7 @@ import { uploadFile } from '../../api/client'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 import { SearchPanel } from './SearchPanel'
+import { ArtifactPanel } from './ArtifactPanel'
 import { LoadingSpinner } from '../common/LoadingSpinner'
 import { EmptyState } from '../common/EmptyState'
 import './ChatView.css'
@@ -19,6 +20,19 @@ export function ChatView() {
   const disconnectWs = useChatStore(s => s.disconnectWs)
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [artifactContent, setArtifactContent] = useState('')
+  const [artifactLanguage, setArtifactLanguage] = useState('')
+  const [artifactOpen, setArtifactOpen] = useState(false)
+
+  const handlePreviewArtifact = useCallback((content: string, language: string) => {
+    setArtifactContent(content)
+    setArtifactLanguage(language)
+    setArtifactOpen(true)
+  }, [])
+
+  const handleCloseArtifact = useCallback(() => {
+    setArtifactOpen(false)
+  }, [])
 
   useEffect(() => {
     loadHistory()
@@ -50,41 +64,50 @@ export function ChatView() {
   }, [messages, searchQuery])
 
   return (
-    <div className="chat-view">
-      <div className="chat-header-bar">
-        <button
-          className={`chat-search-toggle ${showSearch ? 'chat-search-toggle-active' : ''}`}
-          onClick={() => {
-            setShowSearch(v => !v)
-            if (showSearch) setSearchQuery('')
-          }}
-          title="Search messages"
-        >
-          {'\u{1F50D}'}
-        </button>
+    <div className={`chat-view ${artifactOpen ? 'chat-with-artifact' : ''}`}>
+      <div className="chat-main-area">
+        <div className="chat-header-bar">
+          <button
+            className={`chat-search-toggle ${showSearch ? 'chat-search-toggle-active' : ''}`}
+            onClick={() => {
+              setShowSearch(v => !v)
+              if (showSearch) setSearchQuery('')
+            }}
+            title="Search messages"
+          >
+            {'\u{1F50D}'}
+          </button>
+        </div>
+        {showSearch && (
+          <SearchPanel
+            onSearch={setSearchQuery}
+            matchCount={matchCount}
+            onClose={() => { setShowSearch(false); setSearchQuery('') }}
+          />
+        )}
+        {loading && messages.length === 0 ? (
+          <div className="chat-loading">
+            <LoadingSpinner size={32} />
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="chat-empty">
+            <EmptyState
+              title="No messages yet"
+              description="Send a message to start a conversation with your CIV"
+            />
+          </div>
+        ) : (
+          <MessageList messages={messages} onReact={react} highlightIds={highlightIds} onPreviewArtifact={handlePreviewArtifact} />
+        )}
+        <ChatInput onSend={send} onUpload={handleUpload} sending={sending} />
       </div>
-      {showSearch && (
-        <SearchPanel
-          onSearch={setSearchQuery}
-          matchCount={matchCount}
-          onClose={() => { setShowSearch(false); setSearchQuery('') }}
+      {artifactOpen && (
+        <ArtifactPanel
+          content={artifactContent}
+          language={artifactLanguage}
+          onClose={handleCloseArtifact}
         />
       )}
-      {loading && messages.length === 0 ? (
-        <div className="chat-loading">
-          <LoadingSpinner size={32} />
-        </div>
-      ) : messages.length === 0 ? (
-        <div className="chat-empty">
-          <EmptyState
-            title="No messages yet"
-            description="Send a message to start a conversation with your CIV"
-          />
-        </div>
-      ) : (
-        <MessageList messages={messages} onReact={react} highlightIds={highlightIds} />
-      )}
-      <ChatInput onSend={send} onUpload={handleUpload} sending={sending} />
     </div>
   )
 }

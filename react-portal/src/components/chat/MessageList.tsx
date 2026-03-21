@@ -7,9 +7,10 @@ interface MessageListProps {
   messages: ChatMessage[]
   onReact: (msgId: string, emoji: string, text: string, role: 'user' | 'assistant') => void
   highlightIds?: Set<string>
+  onPreviewArtifact?: (content: string, language: string) => void
 }
 
-export function MessageList({ messages, onReact, highlightIds }: MessageListProps) {
+export function MessageList({ messages, onReact, highlightIds, onPreviewArtifact }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const autoScrollRef = useRef(true)
@@ -36,6 +37,7 @@ export function MessageList({ messages, onReact, highlightIds }: MessageListProp
             message={msg}
             onReact={(emoji) => onReact(msg.id, emoji, msg.text, msg.role)}
             highlight={highlightIds?.has(msg.id)}
+            onPreviewArtifact={onPreviewArtifact}
           />
         ))}
         <div ref={bottomRef} />

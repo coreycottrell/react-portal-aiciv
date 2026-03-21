@@ -93,6 +93,70 @@ AGENTCAL_BASE = _read_env_key("AICIVCAL_URL") or "http://5.161.90.32:8300"
 AGENTCAL_CALENDAR_ID_FILE = SCRIPT_DIR / ".aicivcal-calendar-id"
 AGENTCAL_CALENDAR_ID = AGENTCAL_CALENDAR_ID_FILE.read_text().strip() if AGENTCAL_CALENDAR_ID_FILE.exists() else ""
 AGENTCAL_FIRED_IDS_FILE = SCRIPT_DIR / ".agentcal-fired-ids.json"
+
+# AgentSheets configuration
+AGENTSHEETS_URL = _read_env_key("AGENTSHEETS_URL") or "http://5.161.90.32:8500"
+AGENTSHEETS_API_KEY = _read_env_key("AGENTSHEETS_API_KEY") or ""
+
+# AgentAuth configuration (Ed25519 challenge-response → JWT)
+AGENTAUTH_URL = _read_env_key("AGENTAUTH_URL") or ""
+AGENTAUTH_PRIVATE_KEY = _read_env_key("AGENTAUTH_PRIVATE_KEY") or ""
+AGENTAUTH_PUBLIC_KEY = _read_env_key("AGENTAUTH_PUBLIC_KEY") or ""
+_agentauth_jwt: str = ""
+_agentauth_jwt_exp: float = 0.0
+
+async def _get_agentauth_jwt() -> str:
+    """Return a cached AgentAuth JWT, refreshing via challenge-response if needed."""
+    global _agentauth_jwt, _agentauth_jwt_exp
+    if not AGENTAUTH_URL or not AGENTAUTH_PRIVATE_KEY:
+        return ""
+    # Return cached token if still valid (5-min buffer)
+    if _agentauth_jwt and time.time() < (_agentauth_jwt_exp - 300):
+        return _agentauth_jwt
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        # Build private key from raw seed bytes
+        priv_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(AGENTAUTH_PRIVATE_KEY))
+        civ_id = CIV_NAME or "synth"
+        async with httpx.AsyncClient(timeout=10) as client:
+            # Step 1: request challenge
+            resp = await client.post(f"{AGENTAUTH_URL}/challenge", json={"civ_id": civ_id})
+            resp.raise_for_status()
+            challenge = resp.json().get("challenge", "")
+            if not challenge:
+                print("[agentauth] empty challenge returned")
+                return ""
+            # Step 2: sign challenge (decode b64 → sign raw bytes → encode b64)
+            import base64 as _b64
+            challenge_bytes = _b64.b64decode(challenge)
+            sig_bytes = priv_key.sign(challenge_bytes)
+            signature_b64 = _b64.b64encode(sig_bytes).decode()
+            # Step 3: verify and get JWT
+            resp = await client.post(f"{AGENTAUTH_URL}/verify", json={"civ_id": civ_id, "challenge": challenge, "signature": signature_b64})
+            resp.raise_for_status()
+            data = resp.json()
+            _agentauth_jwt = data.get("token", "") or data.get("jwt", "")
+            # TTL from server (default 1h)
+            expires_in = data.get("expires_in", 3600)
+            _agentauth_jwt_exp = time.time() + expires_in
+            if isinstance(_agentauth_jwt_exp, str):
+                _agentauth_jwt_exp = datetime.fromisoformat(_agentauth_jwt_exp.replace("Z", "+00:00")).timestamp()
+            print(f"[agentauth] JWT acquired for {civ_id}, expires in {int(_agentauth_jwt_exp - time.time())}s")
+            return _agentauth_jwt
+    except Exception as e:
+        print(f"[agentauth] JWT refresh failed: {e}")
+        return _agentauth_jwt  # return stale token if available
+
+async def _get_civauth_headers() -> dict:
+    """Return auth headers for CivOS services. Uses AgentAuth JWT if available, else per-service keys."""
+    jwt = await _get_agentauth_jwt()
+    if jwt:
+        return {"Authorization": f"Bearer {jwt}"}
+    # Fallback: per-service API keys (e.g. AgentCal)
+    if AGENTCAL_API_KEY:
+        return {"Authorization": f"Bearer {AGENTCAL_API_KEY}"}
+    return {}
+
 REFERRAL_CODE_PREFIX = "PB-"
 REFERRAL_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no ambiguous chars
 REFERRAL_CODE_LENGTH = 4
@@ -2787,6 +2851,280 @@ async def api_agentcal_events_batch(request: Request) -> JSONResponse:
             current += timedelta(minutes=interval)
 
         return JSONResponse({"ok": True, "created": len(created), "event_ids": created})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
+# AgentSheets proxy endpoints
+# ---------------------------------------------------------------------------
+_agentsheets_http: httpx.AsyncClient | None = None
+
+
+def _get_agentsheets_client() -> httpx.AsyncClient | None:
+    """Lazy-init httpx client for AgentSheets API."""
+    global _agentsheets_http
+    if _agentsheets_http is None or _agentsheets_http.is_closed:
+        _agentsheets_http = httpx.AsyncClient(
+            base_url=AGENTSHEETS_URL,
+            timeout=15.0,
+        )
+    return _agentsheets_http
+
+
+async def _agentsheets_headers() -> dict:
+    """Return auth headers for AgentSheets. Uses CivAuth JWT if available, else AGENTSHEETS_API_KEY."""
+    hdrs = await _get_civauth_headers()
+    if hdrs:
+        return {**hdrs, "Content-Type": "application/json"}
+    if AGENTSHEETS_API_KEY:
+        return {"Authorization": f"Bearer {AGENTSHEETS_API_KEY}", "Content-Type": "application/json"}
+    return {"Content-Type": "application/json"}
+
+
+async def api_sheets_workbooks_list(request: Request) -> JSONResponse:
+    """GET /api/sheets/workbooks — list all workbooks."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"workbooks": [], "error": "AgentSheets not configured"})
+    try:
+        headers = await _agentsheets_headers()
+        resp = await client.get("/workbooks", headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Normalize: API may return list directly or nested
+            wbs = data if isinstance(data, list) else data.get("workbooks", data.get("items", []))
+            return JSONResponse({"workbooks": wbs})
+        return JSONResponse({"workbooks": [], "error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"workbooks": [], "error": str(e)}, status_code=502)
+
+
+async def api_sheets_workbooks_create(request: Request) -> JSONResponse:
+    """POST /api/sheets/workbooks — create workbook."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    try:
+        body = await request.json()
+        headers = await _agentsheets_headers()
+        resp = await client.post("/workbooks", json=body, headers=headers)
+        if resp.status_code in (200, 201):
+            return JSONResponse({"workbook": resp.json()})
+        return JSONResponse({"error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_workbook_get(request: Request) -> JSONResponse:
+    """GET /api/sheets/workbooks/{wb_id} — get workbook."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    try:
+        headers = await _agentsheets_headers()
+        resp = await client.get(f"/workbooks/{wb_id}", headers=headers)
+        if resp.status_code == 200:
+            return JSONResponse({"workbook": resp.json()})
+        return JSONResponse({"error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_workbook_update(request: Request) -> JSONResponse:
+    """PATCH /api/sheets/workbooks/{wb_id} — update workbook."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    try:
+        body = await request.json()
+        headers = await _agentsheets_headers()
+        resp = await client.patch(f"/workbooks/{wb_id}", json=body, headers=headers)
+        if resp.status_code == 200:
+            return JSONResponse({"workbook": resp.json()})
+        return JSONResponse({"error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_workbook_delete(request: Request) -> JSONResponse:
+    """DELETE /api/sheets/workbooks/{wb_id} — delete workbook."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    try:
+        headers = await _agentsheets_headers()
+        resp = await client.delete(f"/workbooks/{wb_id}", headers=headers)
+        if resp.status_code in (200, 204):
+            return JSONResponse({"ok": True})
+        return JSONResponse({"ok": False, "error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_list(request: Request) -> JSONResponse:
+    """GET /api/sheets/workbooks/{wb_id}/sheets — list sheets."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"sheets": [], "error": "AgentSheets not configured"})
+    wb_id = request.path_params["wb_id"]
+    try:
+        headers = await _agentsheets_headers()
+        resp = await client.get(f"/workbooks/{wb_id}/sheets", headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            sheets = data if isinstance(data, list) else data.get("sheets", data.get("items", []))
+            return JSONResponse({"sheets": sheets})
+        return JSONResponse({"sheets": [], "error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"sheets": [], "error": str(e)}, status_code=502)
+
+
+async def api_sheets_create(request: Request) -> JSONResponse:
+    """POST /api/sheets/workbooks/{wb_id}/sheets — create sheet."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    try:
+        body = await request.json()
+        headers = await _agentsheets_headers()
+        resp = await client.post(f"/workbooks/{wb_id}/sheets", json=body, headers=headers)
+        if resp.status_code in (200, 201):
+            return JSONResponse({"sheet": resp.json()})
+        return JSONResponse({"error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_rows_list(request: Request) -> JSONResponse:
+    """GET /api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows — list rows."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"rows": [], "error": "AgentSheets not configured"})
+    wb_id = request.path_params["wb_id"]
+    sh_id = request.path_params["sh_id"]
+    params = {}
+    if request.query_params.get("limit"):
+        params["limit"] = request.query_params["limit"]
+    if request.query_params.get("offset"):
+        params["offset"] = request.query_params["offset"]
+    try:
+        headers = await _agentsheets_headers()
+        resp = await client.get(f"/workbooks/{wb_id}/sheets/{sh_id}/rows", params=params, headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Normalize response — API may return rows directly or nested
+            if isinstance(data, list):
+                return JSONResponse({"rows": data, "total": len(data), "limit": int(params.get("limit", 100)), "offset": int(params.get("offset", 0))})
+            return JSONResponse({
+                "rows": data.get("rows", data.get("items", [])),
+                "total": data.get("total", 0),
+                "limit": data.get("limit", int(params.get("limit", 100))),
+                "offset": data.get("offset", int(params.get("offset", 0))),
+            })
+        return JSONResponse({"rows": [], "error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"rows": [], "error": str(e)}, status_code=502)
+
+
+async def api_sheets_rows_create(request: Request) -> JSONResponse:
+    """POST /api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows — create row."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    sh_id = request.path_params["sh_id"]
+    try:
+        body = await request.json()
+        headers = await _agentsheets_headers()
+        resp = await client.post(f"/workbooks/{wb_id}/sheets/{sh_id}/rows", json=body, headers=headers)
+        if resp.status_code in (200, 201):
+            return JSONResponse({"row": resp.json()})
+        return JSONResponse({"error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_row_update(request: Request) -> JSONResponse:
+    """PATCH /api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows/{row_id} — update row."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    sh_id = request.path_params["sh_id"]
+    row_id = request.path_params["row_id"]
+    try:
+        body = await request.json()
+        headers = await _agentsheets_headers()
+        resp = await client.patch(f"/workbooks/{wb_id}/sheets/{sh_id}/rows/{row_id}", json=body, headers=headers)
+        if resp.status_code == 200:
+            return JSONResponse({"row": resp.json()})
+        return JSONResponse({"error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_row_delete(request: Request) -> JSONResponse:
+    """DELETE /api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows/{row_id} — delete row."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    sh_id = request.path_params["sh_id"]
+    row_id = request.path_params["row_id"]
+    try:
+        headers = await _agentsheets_headers()
+        resp = await client.delete(f"/workbooks/{wb_id}/sheets/{sh_id}/rows/{row_id}", headers=headers)
+        if resp.status_code in (200, 204):
+            return JSONResponse({"ok": True})
+        return JSONResponse({"ok": False, "error": resp.text}, status_code=resp.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def api_sheets_export(request: Request) -> Response:
+    """GET /api/sheets/workbooks/{wb_id}/sheets/{sh_id}/export — export CSV/JSON."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    client = _get_agentsheets_client()
+    if not client:
+        return JSONResponse({"error": "AgentSheets not configured"}, status_code=500)
+    wb_id = request.path_params["wb_id"]
+    sh_id = request.path_params["sh_id"]
+    fmt = request.query_params.get("format", "csv")
+    try:
+        headers = await _agentsheets_headers()
+        resp = await client.get(f"/workbooks/{wb_id}/sheets/{sh_id}/export", params={"format": fmt}, headers=headers)
+        if resp.status_code == 200:
+            content_type = "text/csv" if fmt == "csv" else "application/json"
+            return Response(resp.text, media_type=content_type)
+        return JSONResponse({"error": resp.text}, status_code=resp.status_code)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -6351,6 +6689,118 @@ async def api_agentmail_update(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+# ---------------------------------------------------------------------------
+# AgentAuth proxy endpoints
+# ---------------------------------------------------------------------------
+async def api_civauth_status(request: Request) -> JSONResponse:
+    """GET /api/civauth/status — return current AgentAuth JWT status."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    configured = bool(AGENTAUTH_URL and AGENTAUTH_PRIVATE_KEY)
+    authenticated = bool(_agentauth_jwt and time.time() < _agentauth_jwt_exp)
+    expires_iso = ""
+    if _agentauth_jwt_exp:
+        expires_iso = datetime.fromtimestamp(_agentauth_jwt_exp, tz=timezone.utc).isoformat()
+    return JSONResponse({
+        "configured": configured,
+        "authenticated": authenticated,
+        "civ_id": CIV_NAME or "synth",
+        "jwt_expires": expires_iso,
+    })
+
+async def api_civauth_refresh(request: Request) -> JSONResponse:
+    """POST /api/civauth/refresh — force-refresh the AgentAuth JWT."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    global _agentauth_jwt_exp
+    # Force expiry so _get_agentauth_jwt() will re-authenticate
+    _agentauth_jwt_exp = 0.0
+    jwt = await _get_agentauth_jwt()
+    if jwt:
+        expires_iso = datetime.fromtimestamp(_agentauth_jwt_exp, tz=timezone.utc).isoformat()
+        return JSONResponse({"ok": True, "authenticated": True, "jwt_expires": expires_iso})
+    return JSONResponse({"ok": False, "authenticated": False, "error": "AgentAuth not configured or challenge failed"})
+
+
+# ---------------------------------------------------------------------------
+# AgentDocs proxy endpoints
+# ---------------------------------------------------------------------------
+AGENTDOCS_URL = _read_env_key("AGENTDOCS_URL") or "http://5.161.90.32:8600"
+
+async def api_docs_list(request: Request) -> JSONResponse:
+    """GET /api/docs — list docs from AgentDocs service."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    headers = await _get_civauth_headers()
+    params = dict(request.query_params)
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.get(f"{AGENTDOCS_URL}/docs", headers=headers, params=params)
+            return JSONResponse(resp.json() if resp.status_code == 200 else {"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[agentdocs] list error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_docs_create(request: Request) -> JSONResponse:
+    """POST /api/docs — create a new doc."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    headers = await _get_civauth_headers()
+    body = await request.json()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.post(f"{AGENTDOCS_URL}/docs", headers=headers, json=body)
+            return JSONResponse(resp.json() if resp.status_code in (200, 201) else {"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[agentdocs] create error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_docs_get(request: Request) -> JSONResponse:
+    """GET /api/docs/{doc_id} — get a single doc."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    doc_id = request.path_params["doc_id"]
+    headers = await _get_civauth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.get(f"{AGENTDOCS_URL}/docs/{doc_id}", headers=headers)
+            return JSONResponse(resp.json() if resp.status_code == 200 else {"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[agentdocs] get error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_docs_update(request: Request) -> JSONResponse:
+    """PUT /api/docs/{doc_id} — update a doc."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    doc_id = request.path_params["doc_id"]
+    headers = await _get_civauth_headers()
+    body = await request.json()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.put(f"{AGENTDOCS_URL}/docs/{doc_id}", headers=headers, json=body)
+            return JSONResponse(resp.json() if resp.status_code == 200 else {"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[agentdocs] update error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_docs_delete(request: Request) -> JSONResponse:
+    """DELETE /api/docs/{doc_id} — delete a doc."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    doc_id = request.path_params["doc_id"]
+    headers = await _get_civauth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.delete(f"{AGENTDOCS_URL}/docs/{doc_id}", headers=headers)
+            if resp.status_code in (200, 204):
+                return JSONResponse({"ok": True})
+            return JSONResponse({"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[agentdocs] delete error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
 # App
 # ---------------------------------------------------------------------------
 _react_assets_mount = (
@@ -6450,6 +6900,19 @@ routes = [
     Route("/api/agentcal/events/{evt_id}", endpoint=api_agentcal_event_get, methods=["GET"]),
     Route("/api/agentcal/events/{evt_id}", endpoint=api_agentcal_event_update, methods=["PATCH"]),
     Route("/api/agentcal/events/{evt_id}", endpoint=api_agentcal_event_delete, methods=["DELETE"]),
+    # AgentSheets proxy
+    Route("/api/sheets/workbooks", endpoint=api_sheets_workbooks_list, methods=["GET"]),
+    Route("/api/sheets/workbooks", endpoint=api_sheets_workbooks_create, methods=["POST"]),
+    Route("/api/sheets/workbooks/{wb_id}", endpoint=api_sheets_workbook_get, methods=["GET"]),
+    Route("/api/sheets/workbooks/{wb_id}", endpoint=api_sheets_workbook_update, methods=["PATCH"]),
+    Route("/api/sheets/workbooks/{wb_id}", endpoint=api_sheets_workbook_delete, methods=["DELETE"]),
+    Route("/api/sheets/workbooks/{wb_id}/sheets", endpoint=api_sheets_list, methods=["GET"]),
+    Route("/api/sheets/workbooks/{wb_id}/sheets", endpoint=api_sheets_create, methods=["POST"]),
+    Route("/api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows", endpoint=api_sheets_rows_list, methods=["GET"]),
+    Route("/api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows", endpoint=api_sheets_rows_create, methods=["POST"]),
+    Route("/api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows/{row_id}", endpoint=api_sheets_row_update, methods=["PATCH"]),
+    Route("/api/sheets/workbooks/{wb_id}/sheets/{sh_id}/rows/{row_id}", endpoint=api_sheets_row_delete, methods=["DELETE"]),
+    Route("/api/sheets/workbooks/{wb_id}/sheets/{sh_id}/export", endpoint=api_sheets_export, methods=["GET"]),
     Route("/api/investor/question", endpoint=api_investor_question, methods=["POST", "OPTIONS"]),
     Route("/api/777/chat", endpoint=api_777_chat, methods=["POST", "OPTIONS"]),
     Route("/api/whatsapp/qr", endpoint=api_whatsapp_qr),
@@ -6460,6 +6923,13 @@ routes = [
     Route("/api/agentmail/thread/{thread_id}", endpoint=api_agentmail_thread),
     Route("/api/agentmail/send", endpoint=api_agentmail_send, methods=["POST"]),
     Route("/api/agentmail/{id}", endpoint=api_agentmail_update, methods=["PATCH"]),
+    Route("/api/docs", endpoint=api_docs_list, methods=["GET"]),
+    Route("/api/docs", endpoint=api_docs_create, methods=["POST"]),
+    Route("/api/docs/{doc_id}", endpoint=api_docs_get, methods=["GET"]),
+    Route("/api/docs/{doc_id}", endpoint=api_docs_update, methods=["PUT"]),
+    Route("/api/docs/{doc_id}", endpoint=api_docs_delete, methods=["DELETE"]),
+    Route("/api/civauth/status", endpoint=api_civauth_status),
+    Route("/api/civauth/refresh", endpoint=api_civauth_refresh, methods=["POST"]),
     WebSocketRoute("/ws/chat", endpoint=ws_chat),
     WebSocketRoute("/ws/terminal", endpoint=ws_terminal),
 ]

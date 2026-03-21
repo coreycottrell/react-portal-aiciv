@@ -32,3 +32,17 @@
   align-items: center;
   justify-content: center;
 }
+
+/* Default: chat-main-area behaves like the old chat-view */
+.chat-main-area {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex: 1;
+  min-width: 0;
+}
+
+/* When artifact panel is open, switch to row layout */
+.chat-with-artifact {
+  flex-direction: row;
+}

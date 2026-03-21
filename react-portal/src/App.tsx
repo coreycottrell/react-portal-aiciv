@@ -12,6 +12,8 @@ import { BookmarksView } from './components/bookmarks/BookmarksView'
 import { StatusView } from './components/status/StatusView'
 import { ContextView } from './components/context/ContextView'
 import OrgChartView from './components/agents/OrgChartView'
+import { DocsView } from './components/docs/DocsView'
+import { SheetsView } from './components/sheets/SheetsView'
 import { PointsView } from './components/points/PointsView'
 import { useIdentityStore } from './stores/identityStore'
 import { useSettingsStore } from './stores/settingsStore'
@@ -40,6 +42,8 @@ function AuthenticatedApp() {
         <Route path="/bookmarks" element={<BookmarksView />} />
         <Route path="/context" element={<ContextView />} />
         <Route path="/points" element={<PointsView />} />
+        <Route path="/docs" element={<DocsView />} />
+        <Route path="/sheets" element={<SheetsView />} />
         <Route path="/status" element={<StatusView />} />
         <Route path="/settings" element={<SettingsView />} />
       </Route>

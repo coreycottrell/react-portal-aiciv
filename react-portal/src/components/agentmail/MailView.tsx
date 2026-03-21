@@ -30,6 +30,10 @@ export function MailView() {
     }
   }
 
+  const handleBack = () => {
+    setSelectedMessage(null)
+  }
+
   const handleReply = () => {
     if (!selectedMessage) return
     setReplyTo({
@@ -45,6 +49,9 @@ export function MailView() {
     setComposing(true)
   }
 
+  // On mobile: show either list OR detail, not both
+  const showMobileDetail = !!selectedMessage
+
   return (
     <div className="mail-view">
       <MailSidebar />
@@ -53,20 +60,28 @@ export function MailView() {
           <div className="mail-loading"><LoadingSpinner size={32} /></div>
         ) : (
           <div className="mail-split">
-            <div className="mail-list-pane">
+            <div className={`mail-list-pane ${showMobileDetail ? 'mail-list-pane--hidden-mobile' : ''}`}>
               <MailMessageList
                 messages={messages}
                 selectedId={selectedMessage?.id ?? null}
                 onSelect={handleSelect}
               />
             </div>
-            <div className="mail-detail-pane">
+            <div className={`mail-detail-pane ${showMobileDetail ? 'mail-detail-pane--visible-mobile' : ''}`}>
               {selectedMessage ? (
-                <MessageDetail
-                  message={selectedMessage}
-                  onArchive={() => archive(selectedMessage.id)}
-                  onReply={handleReply}
-                />
+                <>
+                  <button className="mail-back-btn" onClick={handleBack} type="button">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <path d="M10 3L5 8L10 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Back
+                  </button>
+                  <MessageDetail
+                    message={selectedMessage}
+                    onArchive={() => archive(selectedMessage.id)}
+                    onReply={handleReply}
+                  />
+                </>
               ) : (
                 <EmptyState
                   title="Select a message"
