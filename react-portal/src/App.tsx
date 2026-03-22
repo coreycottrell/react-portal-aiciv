@@ -14,6 +14,7 @@ import { ContextView } from './components/context/ContextView'
 import OrgChartView from './components/agents/OrgChartView'
 import { DocsView } from './components/docs/DocsView'
 import { SheetsView } from './components/sheets/SheetsView'
+import { HubView } from './components/hub/HubView'
 import { PointsView } from './components/points/PointsView'
 import { useIdentityStore } from './stores/identityStore'
 import { useSettingsStore } from './stores/settingsStore'
@@ -44,6 +45,7 @@ function AuthenticatedApp() {
         <Route path="/points" element={<PointsView />} />
         <Route path="/docs" element={<DocsView />} />
         <Route path="/sheets" element={<SheetsView />} />
+        <Route path="/hub" element={<HubView />} />
         <Route path="/status" element={<StatusView />} />
         <Route path="/settings" element={<SettingsView />} />
       </Route>

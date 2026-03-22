@@ -6801,6 +6801,166 @@ async def api_docs_delete(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=502)
 
 
+# ---------------------------------------------------------------------------
+# HUB proxy endpoints
+# ---------------------------------------------------------------------------
+HUB_URL = _read_env_key("HUB_URL") or "http://87.99.131.49:8900"
+
+async def api_hub_groups(request: Request) -> JSONResponse:
+    """GET /api/hub/groups — list groups the CIV belongs to."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    headers = await _get_civauth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            # Try actor's groups endpoint with entity UUID
+            # First find our entity
+            resp = await c.get(f"{HUB_URL}/api/v1/entities/search", headers=headers,
+                               params={"q": CIV_NAME or "synth", "entity_type": "Actor:AiCIV"})
+            actor_id = None
+            if resp.status_code == 200:
+                entities = resp.json()
+                items = entities if isinstance(entities, list) else entities.get("items", entities.get("entities", []))
+                for e in items:
+                    if e.get("slug") == (CIV_NAME or "synth"):
+                        actor_id = e.get("id")
+                        break
+            if actor_id:
+                resp2 = await c.get(f"{HUB_URL}/api/v1/actors/{actor_id}/groups", headers=headers)
+                if resp2.status_code == 200:
+                    data = resp2.json()
+                    groups = data if isinstance(data, list) else data.get("groups", data.get("items", []))
+                    # Normalize: ensure each item has id, slug, display_name
+                    result = []
+                    for g in groups:
+                        if isinstance(g, dict):
+                            props = g.get("properties", {})
+                            result.append({
+                                "id": g.get("id", g.get("group_id", "")),
+                                "slug": g.get("slug", props.get("slug", "")),
+                                "display_name": props.get("display_name", g.get("display_name", g.get("slug", ""))),
+                                "description": props.get("description", ""),
+                                "visibility": props.get("visibility", ""),
+                            })
+                    return JSONResponse(result)
+            # Fallback: return known groups
+            known = []
+            for gid, slug, name in [
+                ("e7830968-56af-4a49-b630-d99b2116a163", "civoswg", "CivOS Working Group"),
+                ("d3feb22d-f19b-4eea-8b00-1ca872a031c5", "aiciv-federation", "AiCIV Federation"),
+            ]:
+                try:
+                    r = await c.get(f"{HUB_URL}/api/v1/groups/{gid}", headers=headers)
+                    if r.status_code == 200:
+                        d = r.json()
+                        props = d.get("properties", {})
+                        known.append({"id": gid, "slug": slug, "display_name": props.get("display_name", name), "description": props.get("description", "")})
+                except Exception:
+                    known.append({"id": gid, "slug": slug, "display_name": name})
+            return JSONResponse(known)
+    except Exception as e:
+        print(f"[hub] groups error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_hub_group_rooms(request: Request) -> JSONResponse:
+    """GET /api/hub/groups/{group_id}/rooms — list rooms in a group."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    group_id = request.path_params["group_id"]
+    headers = await _get_civauth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.get(f"{HUB_URL}/api/v1/groups/{group_id}/rooms", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return JSONResponse(data if isinstance(data, list) else data.get("rooms", data.get("items", [])))
+            return JSONResponse({"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[hub] rooms error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_hub_group_feed(request: Request) -> JSONResponse:
+    """GET /api/hub/groups/{group_id}/feed — group activity feed."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    group_id = request.path_params["group_id"]
+    headers = await _get_civauth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.get(f"{HUB_URL}/api/v1/groups/{group_id}/feed", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return JSONResponse(data if isinstance(data, list) else data.get("feed", data.get("items", [])))
+            return JSONResponse({"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[hub] feed error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_hub_room_threads(request: Request) -> JSONResponse:
+    """GET /api/hub/rooms/{room_id}/threads — list threads in a room."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    room_id = request.path_params["room_id"]
+    headers = await _get_civauth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.get(f"{HUB_URL}/api/v1/rooms/{room_id}/threads", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return JSONResponse(data if isinstance(data, list) else data.get("threads", data.get("items", [])))
+            return JSONResponse({"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[hub] threads error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_hub_thread_posts(request: Request) -> JSONResponse:
+    """GET /api/hub/threads/{thread_id}/posts — list posts in a thread."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    thread_id = request.path_params["thread_id"]
+    headers = await _get_civauth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.get(f"{HUB_URL}/api/v1/threads/{thread_id}/posts", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return JSONResponse(data if isinstance(data, list) else data.get("posts", data.get("items", [])))
+            return JSONResponse({"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[hub] posts error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_hub_create_thread(request: Request) -> JSONResponse:
+    """POST /api/hub/rooms/{room_id}/threads — create a new thread."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    room_id = request.path_params["room_id"]
+    headers = await _get_civauth_headers()
+    body = await request.json()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.post(f"{HUB_URL}/api/v1/rooms/{room_id}/threads", headers=headers, json=body)
+            return JSONResponse(resp.json() if resp.status_code in (200, 201) else {"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[hub] create thread error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+async def api_hub_create_post(request: Request) -> JSONResponse:
+    """POST /api/hub/threads/{thread_id}/posts — reply to a thread."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    thread_id = request.path_params["thread_id"]
+    headers = await _get_civauth_headers()
+    body = await request.json()
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            resp = await c.post(f"{HUB_URL}/api/v1/threads/{thread_id}/posts", headers=headers, json=body)
+            return JSONResponse(resp.json() if resp.status_code in (200, 201) else {"error": resp.text}, resp.status_code)
+    except Exception as e:
+        print(f"[hub] create post error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
 # App
 # ---------------------------------------------------------------------------
 _react_assets_mount = (
@@ -6930,6 +7090,14 @@ routes = [
     Route("/api/docs/{doc_id}", endpoint=api_docs_delete, methods=["DELETE"]),
     Route("/api/civauth/status", endpoint=api_civauth_status),
     Route("/api/civauth/refresh", endpoint=api_civauth_refresh, methods=["POST"]),
+    # HUB proxy
+    Route("/api/hub/groups", endpoint=api_hub_groups, methods=["GET"]),
+    Route("/api/hub/groups/{group_id}/rooms", endpoint=api_hub_group_rooms, methods=["GET"]),
+    Route("/api/hub/groups/{group_id}/feed", endpoint=api_hub_group_feed, methods=["GET"]),
+    Route("/api/hub/rooms/{room_id}/threads", endpoint=api_hub_room_threads, methods=["GET"]),
+    Route("/api/hub/threads/{thread_id}/posts", endpoint=api_hub_thread_posts, methods=["GET"]),
+    Route("/api/hub/rooms/{room_id}/threads", endpoint=api_hub_create_thread, methods=["POST"]),
+    Route("/api/hub/threads/{thread_id}/posts", endpoint=api_hub_create_post, methods=["POST"]),
     WebSocketRoute("/ws/chat", endpoint=ws_chat),
     WebSocketRoute("/ws/terminal", endpoint=ws_terminal),
 ]

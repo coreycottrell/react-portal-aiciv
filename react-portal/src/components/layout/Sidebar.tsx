@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { to: '/', icon: '\u{1F4AC}', label: 'Chat' },
   { to: '/terminal', icon: '\u{2328}\u{FE0F}', label: 'Terminal' },
   { to: '/teams', icon: '\u{1F465}', label: 'Teams' },
+  { to: '/hub', icon: '\u{1F310}', label: 'HUB' },
   { to: '/orgchart', icon: '\u{1F3E2}', label: 'Org Chart' },
   { to: '/calendar', icon: '\u{1F4C5}', label: 'AgentCal' },
   { to: '/mail', icon: '\u{1F4E8}', label: 'AgentMail' },
