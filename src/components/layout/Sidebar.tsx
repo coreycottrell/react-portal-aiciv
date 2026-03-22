@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { useMailStore } from '../../stores/mailStore'
 import { useBookmarkStore } from '../../stores/bookmarkStore'
 import { cn } from '../../utils/cn'
+import { WITNESS_NAV_ITEMS } from '../../extensions'
 import './Sidebar.css'
 
 const NAV_ITEMS = [
@@ -41,6 +42,13 @@ export function Sidebar() {
             {item.to === '/bookmarks' && bookmarkCount > 0 && (
               <span className="sidebar-badge">{bookmarkCount}</span>
             )}
+          </NavLink>
+        ))}
+        {/* Witness extensions — injected from extensions.ts, only present in Witness's local build */}
+        {WITNESS_NAV_ITEMS.map(item => (
+          <NavLink key={item.to} to={item.to} className={({ isActive }) => cn('sidebar-link', isActive && 'sidebar-link-active')}>
+            <span className="sidebar-icon">{item.icon}</span>
+            <span className="sidebar-label">{item.label}</span>
           </NavLink>
         ))}
       </nav>

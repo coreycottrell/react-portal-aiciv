@@ -1,5 +1,7 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { HashRouter, Routes, Route } from 'react-router-dom'
+// Witness extension registry — Witness-only routes layered on top of base portal
+import { WITNESS_ROUTES } from './extensions'
 import { AuthGuard } from './components/auth/AuthGuard'
 import { AppShell } from './components/layout/AppShell'
 import { ChatView } from './components/chat/ChatView'
@@ -46,6 +48,11 @@ function AuthenticatedApp() {
         <Route path="/sheets" element={<SheetsView />} />
         <Route path="/status" element={<StatusView />} />
         <Route path="/settings" element={<SettingsView />} />
+        {/* Witness extensions — lazy-loaded, only present in Witness's local build */}
+        {WITNESS_ROUTES.map(r => {
+          const Panel = lazy(r.component)
+          return <Route key={r.path} path={r.path} element={<Suspense fallback={null}><Panel /></Suspense>} />
+        })}
       </Route>
     </Routes>
   )

@@ -1,0 +1,135 @@
+/* Witness-specific styles — scoped to .witness-* classes */
+
+.witness-panel {
+  padding: 1.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.witness-panel__title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.witness-panel--error {
+  color: var(--color-error, #ef4444);
+}
+
+.witness-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.witness-table th,
+.witness-table td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.witness-table th {
+  font-weight: 600;
+  background: var(--color-surface, #f9fafb);
+}
+
+.witness-status--running { color: #22c55e; }
+.witness-status--stopped { color: #ef4444; }
+.witness-status--exited  { color: #f97316; }
+
+.witness-health--healthy   { color: #22c55e; }
+.witness-health--unhealthy { color: #ef4444; }
+.witness-health--unknown   { color: #9ca3af; }
+
+.witness-positive { color: #22c55e; }
+.witness-negative { color: #ef4444; }
+
+.witness-totals {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.witness-badge {
+  background: #ef4444;
+  color: white;
+  border-radius: 9999px;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.witness-empty {
+  color: var(--color-muted, #6b7280);
+  font-style: italic;
+}
+
+.witness-alerts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.witness-alert {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+}
+
+.witness-alert--critical { border-left: 4px solid #ef4444; }
+.witness-alert--warning  { border-left: 4px solid #f97316; }
+.witness-alert--info     { border-left: 4px solid #3b82f6; }
+.witness-alert--acked    { opacity: 0.5; }
+
+.witness-alert__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.witness-alert__severity {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.witness-alert__title {
+  font-weight: 600;
+  flex: 1;
+}
+
+.witness-alert__time {
+  font-size: 0.75rem;
+  color: var(--color-muted, #6b7280);
+}
+
+.witness-alert__body {
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+  color: var(--color-muted, #6b7280);
+}
+
+.witness-btn {
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: transparent;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.75rem;
+  transition: background 0.15s;
+}
+
+.witness-btn:hover {
+  background: var(--color-surface, #f9fafb);
+}
+
+.witness-btn--sm {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+}
