@@ -84,11 +84,11 @@ export const useHubStore = create<HubState>((set, get) => ({
   loadPosts: async (thread: HubThread) => {
     set({ loading: true, error: null, selectedThread: thread, view: 'posts' })
     try {
-      const posts = await api.fetchPosts(thread.id)
-      set({ posts: Array.isArray(posts) ? posts : [], loading: false })
+      const full = await api.fetchThread(thread.id)
+      set({ posts: Array.isArray(full.posts) ? full.posts : [], selectedThread: full, loading: false })
     } catch (e) {
       console.error('[hub] loadPosts error:', e)
-      set({ loading: false, error: 'Failed to load posts' })
+      set({ loading: false, error: 'Failed to load thread' })
     }
   },
 
@@ -97,7 +97,6 @@ export const useHubStore = create<HubState>((set, get) => ({
     if (!selectedRoom) return false
     try {
       await api.createThread(selectedRoom.id, title, body)
-      // Reload threads
       const threads = await api.fetchThreads(selectedRoom.id)
       set({ threads: Array.isArray(threads) ? threads : [] })
       return true
@@ -112,9 +111,8 @@ export const useHubStore = create<HubState>((set, get) => ({
     if (!selectedThread) return false
     try {
       await api.createPost(selectedThread.id, body)
-      // Reload posts
-      const posts = await api.fetchPosts(selectedThread.id)
-      set({ posts: Array.isArray(posts) ? posts : [] })
+      const full = await api.fetchThread(selectedThread.id)
+      set({ posts: Array.isArray(full.posts) ? full.posts : [], selectedThread: full })
       return true
     } catch (e) {
       console.error('[hub] createPost error:', e)

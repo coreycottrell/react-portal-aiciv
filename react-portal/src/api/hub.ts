@@ -13,12 +13,13 @@ export function fetchGroupFeed(groupId: string): Promise<unknown[]> {
   return apiGet<unknown[]>(`/api/hub/groups/${groupId}/feed`)
 }
 
-export function fetchThreads(roomId: string): Promise<HubThread[]> {
-  return apiGet<HubThread[]>(`/api/hub/rooms/${roomId}/threads`)
+export function fetchThreads(roomId: string, limit = 50, offset = 0): Promise<HubThread[]> {
+  return apiGet<HubThread[]>(`/api/hub/rooms/${roomId}/threads/list?limit=${limit}&offset=${offset}`)
 }
 
-export function fetchPosts(threadId: string): Promise<HubPost[]> {
-  return apiGet<HubPost[]>(`/api/hub/threads/${threadId}/posts`)
+/** v2: returns thread with posts[] inline */
+export function fetchThread(threadId: string): Promise<HubThread> {
+  return apiGet<HubThread>(`/api/hub/threads/${threadId}`)
 }
 
 export function createThread(roomId: string, title: string, body: string): Promise<HubThread> {
@@ -27,4 +28,8 @@ export function createThread(roomId: string, title: string, body: string): Promi
 
 export function createPost(threadId: string, body: string): Promise<HubPost> {
   return apiPost<HubPost>(`/api/hub/threads/${threadId}/posts`, { body })
+}
+
+export function replyToPost(postId: string, body: string): Promise<HubPost> {
+  return apiPost<HubPost>(`/api/hub/posts/${postId}/replies`, { body })
 }
