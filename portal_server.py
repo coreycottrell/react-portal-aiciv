@@ -65,8 +65,8 @@ UPLOADS_DIR = Path.home() / "portal_uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 UPLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 PAYOUT_REQUESTS_FILE = SCRIPT_DIR / "payout-requests.jsonl"
-# Paths to Aether log files used for client data import
-_AETHER_LOG_ROOT = Path.home() / "projects" / "AI-CIV" / "aether" / "logs"
+# Paths to CIV log files used for client data import
+_AETHER_LOG_ROOT = Path.home() / "civ" / "logs"
 WEB_CONVERSATIONS_LOG = _AETHER_LOG_ROOT / "purebrain_web_conversations.jsonl"
 PAYMENTS_LOG          = _AETHER_LOG_ROOT / "purebrain_payments.jsonl"
 PAY_TEST_LOG          = _AETHER_LOG_ROOT / "purebrain_pay_test.jsonl"
@@ -2195,7 +2195,7 @@ async def api_schedule_task(request) -> JSONResponse:
     return JSONResponse({"ok": True, "task_id": task_id, "fire_at": fire_at, "recur_type": recur_type})
 
 
-BOOP_STATE_FILE = Path("/home/jared/projects/AI-CIV/aether/.claude/scheduled-tasks-state.json")
+BOOP_STATE_FILE = Path.home() / ".claude" / "scheduled-tasks-state.json"
 
 async def api_boops_list(request) -> JSONResponse:
     """GET /api/boops — list all BOOPs from boop_executor config."""
@@ -2394,14 +2394,6 @@ async def api_777_chat(request) -> JSONResponse:
 
     # Get API key
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        # Try loading from .env
-        env_path = Path("/home/jared/projects/AI-CIV/aether/.env")
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if line.startswith("ANTHROPIC_API_KEY="):
-                    api_key = line.split("=", 1)[1].strip()
-                    break
     if not api_key:
         return JSONResponse({"error": "AI service not configured. Add ANTHROPIC_API_KEY to .env"}, status_code=500, headers=cors)
 
@@ -5597,13 +5589,13 @@ async def _init_agents_db() -> None:
         cur = await db.execute("SELECT COUNT(*) FROM agents")
         row = await cur.fetchone()
         if row and row[0] == 0:
-            await _seed_aether_agents(db)
+            await _seed_civ_agents(db)
             await db.commit()
     print(f"[agents] SQLite DB ready: {AGENTS_DB}")
 
 
-async def _seed_aether_agents(db) -> None:
-    """Seed the agents table with Aether's full roster from .claude/agents/ manifests."""
+async def _seed_civ_agents(db) -> None:
+    """Seed the agents table with this CIV's roster from .claude/agents/ manifests."""
     import yaml as _yaml_mod
     import json as _j
     now = datetime.utcnow().isoformat()
@@ -5705,8 +5697,7 @@ async def _seed_aether_agents(db) -> None:
 
     # First try to read from manifest files (if they exist)
     agents_dir = Path.home() / ".claude" / "agents"
-    alt_agents_dir = Path.home() / "projects" / "AI-CIV" / "aether" / ".claude" / "agents"
-    manifest_dir = agents_dir if agents_dir.exists() else (alt_agents_dir if alt_agents_dir.exists() else None)
+    manifest_dir = agents_dir if agents_dir.exists() else None
 
     seeded = 0
     if manifest_dir:
@@ -6088,7 +6079,7 @@ async def api_agents_update_status(request: Request) -> JSONResponse:
                 """INSERT OR IGNORE INTO agents
                    (id, user_id, name, status, current_task, last_completed, created_at, last_active)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (agent_id, "jared", name, status, task, "", now, now),
+                (agent_id, "default", name, status, task, "", now, now),
             )
         else:
             if status == "idle":
@@ -6263,10 +6254,10 @@ async def api_commands(request: Request) -> JSONResponse:
         hostname = "unknown"
 
     home = str(Path.home())
-    civ_root = str(Path.home() / "projects" / "AI-CIV" / "aether")
+    civ_root = str(Path.home() / "civ")
     portal_dir = str(SCRIPT_DIR)
-    tools_dir = str(Path.home() / "projects" / "AI-CIV" / "aether" / "tools")
-    logs_dir = str(Path.home() / "projects" / "AI-CIV" / "aether" / "logs")
+    tools_dir = str(Path.home() / "civ" / "tools")
+    logs_dir = str(Path.home() / "civ" / "logs")
 
     try:
         tmux_session = get_tmux_session()
