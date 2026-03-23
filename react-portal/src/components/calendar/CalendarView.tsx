@@ -18,6 +18,8 @@ export function CalendarView() {
 
   useEffect(() => {
     loadTasks()
+    const interval = setInterval(() => loadTasks(), 60_000)
+    return () => clearInterval(interval)
   }, [loadTasks])
 
   const navigate = (dir: 1 | -1) => {
