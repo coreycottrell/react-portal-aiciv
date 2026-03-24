@@ -907,13 +907,16 @@ async def health(request: Request) -> JSONResponse:
 
 
 async def index(request: Request) -> Response:
+    react_index = REACT_DIST / "index.html"
+    if react_index.exists():
+        return FileResponse(str(react_index), media_type="text/html")
     if PORTAL_PB_HTML.exists():
         resp = FileResponse(str(PORTAL_PB_HTML), media_type="text/html")
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return resp
     if PORTAL_HTML.exists():
         return FileResponse(str(PORTAL_HTML), media_type="text/html")
-    return Response("<h1>Portal HTML not found</h1>", media_type="text/html", status_code=503)
+    return Response("<h1>Portal not found</h1>", media_type="text/html", status_code=503)
 
 
 async def index_pb(request: Request) -> Response:
