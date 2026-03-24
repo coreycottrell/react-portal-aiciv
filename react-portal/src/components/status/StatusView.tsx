@@ -22,8 +22,10 @@ interface BoopStatus {
 }
 
 interface AuthStatus {
-  status: string
-  expires_at?: number
+  authenticated: boolean
+  account?: string | null
+  expires_at?: number | null
+  subscription?: string | null
 }
 
 export function StatusView() {
@@ -37,7 +39,7 @@ export function StatusView() {
       const [s, b, a] = await Promise.allSettled([
         apiGet<StatusData>('/api/status'),
         apiGet<BoopStatus>('/api/boop-status'),
-        apiGet<AuthStatus>('/api/claude-auth-status'),
+        apiGet<AuthStatus>('/api/auth/status'),
       ])
       if (s.status === 'fulfilled') setStatus(s.value)
       if (b.status === 'fulfilled') setBoop(b.value)
@@ -130,8 +132,20 @@ export function StatusView() {
           <div className="status-card-body">
             <div className="status-row">
               <span className="status-label">Status</span>
-              <span className="status-value">{auth?.status ?? '—'}</span>
+              <span className="status-value">{auth ? (auth.authenticated ? '\uD83D\uDFE2 authenticated' : '\uD83D\uDD34 not authenticated') : '—'}</span>
             </div>
+            {auth?.account && (
+              <div className="status-row">
+                <span className="status-label">Account</span>
+                <span className="status-value">{auth.account}</span>
+              </div>
+            )}
+            {auth?.subscription && (
+              <div className="status-row">
+                <span className="status-label">Subscription</span>
+                <span className="status-value">{auth.subscription}</span>
+              </div>
+            )}
             {auth?.expires_at && (
               <div className="status-row">
                 <span className="status-label">Expires</span>

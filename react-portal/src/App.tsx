@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { HashRouter, Routes, Route } from 'react-router-dom'
 import { AuthGuard } from './components/auth/AuthGuard'
+import { ClaudeAuthFlow } from './components/auth/ClaudeAuthFlow'
 import { AppShell } from './components/layout/AppShell'
 import { ChatView } from './components/chat/ChatView'
 import { CalendarView } from './components/calendar/CalendarView'
@@ -33,8 +34,10 @@ function AuthenticatedApp() {
   }, [fetchIdentity, fetchStatusInfo])
 
   return (
-    <Routes>
-      <Route element={<AppShell />}>
+    <>
+      <ClaudeAuthFlow />
+      <Routes>
+        <Route element={<AppShell />}>
         <Route path="/" element={<ChatView />} />
         <Route path="/terminal" element={<TerminalView />} />
         <Route path="/teams" element={<TeamsView />} />
@@ -52,6 +55,7 @@ function AuthenticatedApp() {
         <Route path="/settings" element={<SettingsView />} />
       </Route>
     </Routes>
+    </>
   )
 }
 
