@@ -176,6 +176,12 @@ CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 OAUTH_URL_PATTERN = re.compile(r'https://[^\s\x1b\x07\]]*oauth/authorize\?[^\s\x1b\x07\]]+')
 _captured_oauth_url = None
 
+# Evolution markers
+EVOLUTION_DONE_MARKER = Path.home() / "memories" / "identity" / ".evolution-done"
+FIRST_BOOT_MARKER = Path.home() / ".first-boot-fired"
+FIRST_BOOT_SKILL_PATH = Path.home() / ".claude" / "skills" / "first-visit-evolution" / "SKILL.md"
+FIRST_BOOT_PROMPT_PATH = Path.home() / ".claude" / "skills" / "first-visit-evolution" / "prompt.txt"
+
 if TOKEN_FILE.exists():
     BEARER_TOKEN = TOKEN_FILE.read_text().strip()
 else:
@@ -1907,6 +1913,80 @@ async def api_claude_auth_url(request: Request) -> JSONResponse:
     except Exception as e:
         _save_portal_message(f"tmux capture failed: {e}", role="assistant")
     return JSONResponse({"url": None, "ready": False})
+
+
+# ---------------------------------------------------------------------------
+# Evolution Endpoints
+# ---------------------------------------------------------------------------
+
+def _extract_evolution_prompt(skill_path: Path, prompt_path: Path) -> str:
+    """Extract the first-visit evolution prompt from prompt.txt or SKILL.md."""
+    if prompt_path.exists():
+        return prompt_path.read_text().strip()
+    if skill_path.exists():
+        content = skill_path.read_text()
+        # Find the section "## The Prompt (Inject This)"
+        marker = "## The Prompt (Inject This)"
+        idx = content.find(marker)
+        if idx != -1:
+            section = content[idx:]
+            # Find first ``` block in that section
+            first_fence = section.find("```")
+            if first_fence != -1:
+                # Skip language specifier line if present
+                after_fence = section[first_fence + 3:]
+                newline_idx = after_fence.find("\n")
+                if newline_idx != -1:
+                    after_first_line = after_fence[newline_idx + 1:]
+                    end_fence = after_first_line.find("```")
+                    if end_fence != -1:
+                        return after_first_line[:end_fence].strip()
+    return "You just woke up. Read your constitution: /home/aiciv/.claude/CLAUDE.md — then greet your human."
+
+
+async def api_evolution_status(request: Request) -> JSONResponse:
+    """Return the current evolution state: pending | in_progress | complete."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if EVOLUTION_DONE_MARKER.exists():
+        return JSONResponse({"status": "complete"})
+    if FIRST_BOOT_MARKER.exists():
+        return JSONResponse({"status": "in_progress"})
+    return JSONResponse({"status": "pending"})
+
+
+async def api_evolution_first_boot(request: Request) -> JSONResponse:
+    """Trigger first-visit evolution by injecting the awakening prompt into tmux.
+
+    Guards: skips if already evolved or already fired this session.
+    """
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if EVOLUTION_DONE_MARKER.exists():
+        return JSONResponse({"status": "already_evolved"})
+    if FIRST_BOOT_MARKER.exists():
+        return JSONResponse({"status": "already_fired"})
+    # Write marker before injecting — prevents double-fire on concurrent calls
+    try:
+        FIRST_BOOT_MARKER.write_text(str(time.time()))
+    except Exception as e:
+        return JSONResponse({"error": f"could not write marker: {e}"}, status_code=500)
+    prompt_text = _extract_evolution_prompt(FIRST_BOOT_SKILL_PATH, FIRST_BOOT_PROMPT_PATH)
+    pane = await _find_primary_pane_async()
+    _save_portal_message("Evolution started — your AI is waking up and reading your conversation...", role="assistant")
+    try:
+        r = await _run_subprocess_async(
+            ["tmux", "send-keys", "-t", pane, "-l", f"\n{prompt_text}"], check=True
+        )
+        if r is None:
+            return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+        await asyncio.sleep(0.5)
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+        return JSONResponse({"status": "fired", "message": "Evolution started"})
+    except Exception as e:
+        _save_portal_message(f"Evolution injection failed: {e}", role="assistant")
+        return JSONResponse({"error": f"tmux error: {e}"}, status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -7082,6 +7162,8 @@ routes = [
     Route("/api/auth/start", endpoint=api_claude_auth_start, methods=["POST"]),
     Route("/api/auth/code", endpoint=api_claude_auth_code, methods=["POST"]),
     Route("/api/auth/url", endpoint=api_claude_auth_url),
+    Route("/api/evolution/status", endpoint=api_evolution_status),
+    Route("/api/evolution/first-boot", endpoint=api_evolution_first_boot, methods=["POST"]),
     Route("/api/resume", endpoint=api_resume, methods=["POST"]),
     Route("/api/panes", endpoint=api_panes),
     Route("/api/inject/pane", endpoint=api_inject_pane, methods=["POST"]),
