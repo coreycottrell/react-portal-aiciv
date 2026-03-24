@@ -16,6 +16,7 @@ import { DocsView } from './components/docs/DocsView'
 import { SheetsView } from './components/sheets/SheetsView'
 import { HubView } from './components/hub/HubView'
 import { PointsView } from './components/points/PointsView'
+import { BrowserView } from './components/browser/BrowserView'
 import { useIdentityStore } from './stores/identityStore'
 import { useSettingsStore } from './stores/settingsStore'
 
@@ -46,6 +47,7 @@ function AuthenticatedApp() {
         <Route path="/docs" element={<DocsView />} />
         <Route path="/sheets" element={<SheetsView />} />
         <Route path="/hub" element={<HubView />} />
+        <Route path="/browser" element={<BrowserView />} />
         <Route path="/status" element={<StatusView />} />
         <Route path="/settings" element={<SettingsView />} />
       </Route>

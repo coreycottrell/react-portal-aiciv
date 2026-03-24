@@ -2615,7 +2615,7 @@ def _get_agentcal_client() -> httpx.AsyncClient | None:
         return None
     if _agentcal_http is None or _agentcal_http.is_closed:
         _agentcal_http = httpx.AsyncClient(
-            base_url=AGENTCAL_BASE,
+            base_url=f"{AGENTCAL_BASE}/api/v1",
             headers={"Authorization": f"Bearer {AGENTCAL_API_KEY}",
                      "Content-Type": "application/json"},
             timeout=15.0,
@@ -6980,6 +6980,72 @@ async def api_hub_reply_to_post(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=502)
 
 
+# ---------------------------------------------------------------------------
+# AgentBrowser proxy
+# ---------------------------------------------------------------------------
+BROWSER_URL = os.environ.get("BROWSER_URL", "http://localhost:8099")
+
+
+async def api_browser_proxy(request: Request) -> JSONResponse:
+    """Proxy REST commands to AgentBrowser service (/api/browser/<action>)."""
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    action = request.path_params.get("action", "")
+    method = request.method
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            if method == "GET":
+                resp = await c.get(f"{BROWSER_URL}/{action}")
+            else:
+                body = await request.body()
+                resp = await c.post(
+                    f"{BROWSER_URL}/{action}",
+                    content=body,
+                    headers={"Content-Type": "application/json"},
+                )
+            return JSONResponse(resp.json(), status_code=resp.status_code)
+    except Exception as e:
+        print(f"[browser] proxy error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
+async def ws_browser(websocket: WebSocket) -> None:
+    """Proxy WebSocket connection to AgentBrowser service."""
+    token = websocket.query_params.get("token", "")
+    if token != BEARER_TOKEN:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+
+    import websockets as _ws
+
+    try:
+        async with _ws.connect(f"ws://localhost:8099/ws/browser") as upstream:
+            async def portal_to_browser():
+                try:
+                    while True:
+                        data = await websocket.receive_text()
+                        await upstream.send(data)
+                except Exception:
+                    pass
+
+            async def browser_to_portal():
+                try:
+                    async for msg in upstream:
+                        await websocket.send_text(msg if isinstance(msg, str) else msg.decode())
+                except Exception:
+                    pass
+
+            await asyncio.gather(portal_to_browser(), browser_to_portal())
+    except (WebSocketDisconnect, Exception) as e:
+        print(f"[browser] ws proxy error: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 # App
 # ---------------------------------------------------------------------------
 _react_assets_mount = (
@@ -7118,8 +7184,10 @@ routes = [
     Route("/api/hub/rooms/{room_id}/threads", endpoint=api_hub_create_thread, methods=["POST"]),
     Route("/api/hub/threads/{thread_id}/posts", endpoint=api_hub_create_post, methods=["POST"]),
     Route("/api/hub/posts/{post_id}/replies", endpoint=api_hub_reply_to_post, methods=["POST"]),
+    Route("/api/browser/{action}", endpoint=api_browser_proxy, methods=["GET", "POST"]),
     WebSocketRoute("/ws/chat", endpoint=ws_chat),
     WebSocketRoute("/ws/terminal", endpoint=ws_terminal),
+    WebSocketRoute("/ws/browser", endpoint=ws_browser),
 ]
 
 app = Starlette(
