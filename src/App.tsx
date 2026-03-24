@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route } from 'react-router-dom'
 // Witness extension registry — Witness-only routes layered on top of base portal
 import { WITNESS_ROUTES } from './extensions'
 import { AuthGuard } from './components/auth/AuthGuard'
+import { ClaudeAuthFlow } from './components/auth/ClaudeAuthFlow'
 import { AppShell } from './components/layout/AppShell'
 import { ChatView } from './components/chat/ChatView'
 import { CalendarView } from './components/calendar/CalendarView'
@@ -68,7 +69,10 @@ export default function App() {
   return (
     <HashRouter>
       <AuthGuard>
-        <AuthenticatedApp />
+        <>
+          <ClaudeAuthFlow />
+          <AuthenticatedApp />
+        </>
       </AuthGuard>
     </HashRouter>
   )
