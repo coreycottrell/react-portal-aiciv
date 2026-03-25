@@ -32,6 +32,12 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+# Ensure HOME is set correctly for the aiciv user.
+# docker exec -u aiciv inherits the caller's HOME (often /root) rather than /home/aiciv.
+# Fix it here so Path.home() returns the right path throughout the server.
+if os.environ.get("HOME", "/root") == "/root" and os.path.isdir("/home/aiciv"):
+    os.environ["HOME"] = "/home/aiciv"
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
