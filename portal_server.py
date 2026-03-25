@@ -1847,58 +1847,60 @@ async def _is_claude_running_in_pane(pane: str) -> bool:
 
 
 async def api_claude_auth_start(request: Request) -> JSONResponse:
-    """Start Claude auth — ALWAYS launches Claude first (fresh container assumption).
+    """Inject /login into the Claude tmux session to start OAuth flow.
 
-    Fresh birth containers have never had Claude running. We do not check whether
-    Claude is already running — we always start it, wait for output-based readiness,
-    then send /login and auto-select the web browser auth option.
+    If Claude Code is not running in the pane (v5 architecture — no pre-start),
+    launches Claude with /login from a safe CWD. Born containers don't have
+    ~/civ, so the pane may have a stale deleted CWD that causes Node.js to
+    crash with uv_cwd ENOENT. Always cd to home first.
     """
     if not check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     global _captured_oauth_url
     _captured_oauth_url = None
     pane = await _find_primary_pane_async()
-    _save_portal_message(f"Auth flow started — launching Claude in {get_tmux_session()}", role="assistant")
+    _save_portal_message(f"Auth flow started — checking Claude in {get_tmux_session()} (pane {pane})", role="assistant")
     try:
-        # CRITICAL: Resize tmux window to 500 cols BEFORE sending /login.
-        # Claude prints the OAuth URL as one long line — if the window is narrow
-        # (e.g. 80 cols), the URL wraps and tmux capture-pane -J can't reliably
-        # un-wrap it. At 500 cols the URL fits on one line, no wrapping, clean capture.
+        # CRITICAL: Resize to 500 cols before /login — OAuth URL must fit on one
+        # line so tmux capture-pane -J can reliably extract it without truncation.
         await _run_subprocess_async(["tmux", "resize-window", "-t", pane, "-x", "500"])
+        await asyncio.sleep(0.3)
 
-        # Step 1: Start Claude (fresh container — Claude has never run, don't check)
-        _save_portal_message("🚀 Launching Claude Code in tmux...", role="assistant")
-        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l",
-                                    "claude --dangerously-skip-permissions"], check=True)
-        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-
-        # Step 2: Wait for Claude to initialize — poll pane OUTPUT (up to 30 seconds)
-        # Output-based detection is more reliable than pane_current_command.
-        started = False
-        for _ in range(15):
+        claude_running = await _is_claude_running_in_pane(pane)
+        if not claude_running:
+            # v5: Claude is never pre-started. Launch it with /login from a safe CWD.
+            # CRITICAL: cd to home first — born containers don't have ~/civ, so a
+            # stale deleted CWD causes Node.js uv_cwd ENOENT and Claude exits silently.
+            _save_portal_message("Claude not running — starting Claude Code with /login...", role="assistant")
+            launch_cmd = f"cd {Path.home()} && claude /login"
+            r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
+            if r is None:
+                return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
+            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+            # Poll until Claude is the active process (up to 30 seconds)
+            started = False
+            for _ in range(60):
+                await asyncio.sleep(0.5)
+                if await _is_claude_running_in_pane(pane):
+                    started = True
+                    break
+            if not started:
+                _save_portal_message("Claude didn't start within 30s — proceeding anyway", role="assistant")
+            # Give the login menu time to render, then auto-select option 1 (web browser)
+            await asyncio.sleep(3)
+            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+        else:
+            # Claude is already running — inject /login into existing session
+            _save_portal_message("Claude running — sending /login...", role="assistant")
+            r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", "/login"], check=True)
+            if r is None:
+                return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
+            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
             await asyncio.sleep(2)
-            output = await _run_subprocess_output(
-                ["tmux", "capture-pane", "-t", pane, "-p", "-S", "-10"], timeout=5
-            )
-            if output and ("claude" in output.lower() or "\u2771" in output or "opus" in output.lower()):
-                started = True
-                break
-        if not started:
-            _save_portal_message("⚠️ Claude didn't confirm within 30s — sending /login anyway", role="assistant")
-        await asyncio.sleep(1)
-
-        # Step 3: Send /login
-        r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", "/login"], check=True)
-        if r is None:
-            return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
-        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-
-        # Step 4: Auto-select web browser auth option
-        await asyncio.sleep(2)
-        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
 
         _save_portal_message("/login sent — waiting for OAuth URL to appear in terminal...", role="assistant")
-        return JSONResponse({"started": True, "message": "Claude launched, /login sent, polling for OAuth URL"})
+        return JSONResponse({"started": True})
     except Exception as e:
         _save_portal_message(f"Auth start failed: tmux error — pane={pane}, err={e}", role="assistant")
         return JSONResponse({"error": f"tmux error: {e}"}, status_code=500)
@@ -2002,7 +2004,13 @@ async def api_evolution_status(request: Request) -> JSONResponse:
 
 
 async def api_evolution_first_boot(request: Request) -> JSONResponse:
-    """Trigger first-visit evolution by injecting the awakening prompt into tmux.
+    """Launch a fresh Claude session and trigger first-visit evolution.
+
+    After OAuth auth completes, the /login Claude instance is temporary.
+    This endpoint:
+      1. Kills the /login Claude session
+      2. Launches a fresh claude --dangerously-skip-permissions session
+      3. Injects the awakening prompt into the new session
 
     Guards: skips if already evolved or already fired this session.
     """
@@ -2012,11 +2020,52 @@ async def api_evolution_first_boot(request: Request) -> JSONResponse:
         return JSONResponse({"status": "already_evolved"})
     if FIRST_BOOT_MARKER.exists():
         return JSONResponse({"status": "already_fired"})
-    # Write marker before injecting — prevents double-fire on concurrent calls
+    # Write marker before launching — prevents double-fire on concurrent calls
     try:
         FIRST_BOOT_MARKER.write_text(str(time.time()))
     except Exception as e:
         return JSONResponse({"error": f"could not write marker: {e}"}, status_code=500)
+
+    # Step 1: Kill any existing {civ}-primary-* sessions (the /login instance)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    tmux_session = f"{CIV_NAME}-primary-{timestamp}"
+    project_dir = str(Path.home())
+    try:
+        old = await _run_subprocess_output(
+            ["tmux", "list-sessions", "-F", "#{session_name}"], timeout=3
+        )
+        if old:
+            for s in old.splitlines():
+                if s.startswith(f"{CIV_NAME}-primary-"):
+                    await _run_subprocess_async(["tmux", "kill-session", "-t", s])
+    except Exception:
+        pass
+
+    # Step 2: Write session name so portal can track it
+    marker = Path.home() / ".current_session"
+    marker.write_text(tmux_session)
+
+    # Step 3: Launch fresh Claude session (no --resume — first birth has no prior session)
+    _save_portal_message("Auth complete — launching Claude session for evolution...", role="assistant")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: subprocess.Popen(
+        ["tmux", "new-session", "-d", "-s", tmux_session, "-c", project_dir,
+         "claude --dangerously-skip-permissions"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ))
+
+    # Step 4: Wait for Claude to start in the new session (up to 30 seconds)
+    started = False
+    for _ in range(60):
+        await asyncio.sleep(0.5)
+        pane = await _find_primary_pane_async()
+        if pane and await _is_claude_running_in_pane(pane):
+            started = True
+            break
+    if not started:
+        _save_portal_message("Claude session didn't confirm within 30s — proceeding with evolution anyway", role="assistant")
+
+    # Step 5: Inject the awakening prompt into the new session
     prompt_text = _extract_evolution_prompt(FIRST_BOOT_SKILL_PATH, FIRST_BOOT_PROMPT_PATH)
     pane = await _find_primary_pane_async()
     _save_portal_message("Evolution started — your AI is waking up and reading your conversation...", role="assistant")
