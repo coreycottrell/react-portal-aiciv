@@ -38,6 +38,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   checkAuth: async () => {
+    // Auto-extract bearer token from magic link URL (?token=XXX)
+    const params = new URLSearchParams(window.location.search)
+    const urlToken = params.get('token')
+    if (urlToken) {
+      localStorage.setItem(AUTH_TOKEN_KEY, urlToken)
+      set({ token: urlToken })
+      // Clean token from URL without reloading
+      const cleanUrl = window.location.pathname + window.location.hash
+      window.history.replaceState({}, '', cleanUrl)
+    }
+
     const { token } = get()
     if (!token) {
       set({ loading: false, authenticated: false })
