@@ -1847,53 +1847,58 @@ async def _is_claude_running_in_pane(pane: str) -> bool:
 
 
 async def api_claude_auth_start(request: Request) -> JSONResponse:
-    """Inject /login into the Claude tmux session to start OAuth flow.
+    """Start Claude auth — ALWAYS launches Claude first (fresh container assumption).
 
-    If Claude Code is not running in the pane (e.g. fresh container with only
-    a bash shell), starts Claude first and waits for it to be ready before
-    sending /login.
+    Fresh birth containers have never had Claude running. We do not check whether
+    Claude is already running — we always start it, wait for output-based readiness,
+    then send /login and auto-select the web browser auth option.
     """
     if not check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     global _captured_oauth_url
     _captured_oauth_url = None
     pane = await _find_primary_pane_async()
-    _save_portal_message(f"Auth flow started — injecting /login into {get_tmux_session()}", role="assistant")
+    _save_portal_message(f"Auth flow started — launching Claude in {get_tmux_session()}", role="assistant")
     try:
         # CRITICAL: Resize tmux window to 500 cols BEFORE sending /login.
         # Claude prints the OAuth URL as one long line — if the window is narrow
         # (e.g. 80 cols), the URL wraps and tmux capture-pane -J can't reliably
         # un-wrap it. At 500 cols the URL fits on one line, no wrapping, clean capture.
         await _run_subprocess_async(["tmux", "resize-window", "-t", pane, "-x", "500"])
-        await asyncio.sleep(0.3)
 
-        # If Claude Code is NOT running in the pane (e.g. bare bash shell on
-        # a fresh container), start it first and wait for it to be ready.
-        if not await _is_claude_running_in_pane(pane):
-            _save_portal_message("🚀 Claude not running — starting Claude Code in tmux...", role="assistant")
-            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l",
-                                        "claude --dangerously-skip-permissions"], check=True)
-            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-            # Poll until Claude is the active process (up to 30 seconds)
-            started = False
-            for _ in range(60):
-                await asyncio.sleep(0.5)
-                if await _is_claude_running_in_pane(pane):
-                    started = True
-                    break
-            if not started:
-                _save_portal_message("⚠️ Claude didn't start within 30s — sending /login anyway", role="assistant")
-            # Give Claude a moment to fully render its prompt
-            await asyncio.sleep(3)
+        # Step 1: Start Claude (fresh container — Claude has never run, don't check)
+        _save_portal_message("🚀 Launching Claude Code in tmux...", role="assistant")
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l",
+                                    "claude --dangerously-skip-permissions"], check=True)
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
 
+        # Step 2: Wait for Claude to initialize — poll pane OUTPUT (up to 30 seconds)
+        # Output-based detection is more reliable than pane_current_command.
+        started = False
+        for _ in range(15):
+            await asyncio.sleep(2)
+            output = await _run_subprocess_output(
+                ["tmux", "capture-pane", "-t", pane, "-p", "-S", "-10"], timeout=5
+            )
+            if output and ("claude" in output.lower() or "\u2771" in output or "opus" in output.lower()):
+                started = True
+                break
+        if not started:
+            _save_portal_message("⚠️ Claude didn't confirm within 30s — sending /login anyway", role="assistant")
+        await asyncio.sleep(1)
+
+        # Step 3: Send /login
         r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", "/login"], check=True)
         if r is None:
             return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
         await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+
+        # Step 4: Auto-select web browser auth option
         await asyncio.sleep(2)
         await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+
         _save_portal_message("/login sent — waiting for OAuth URL to appear in terminal...", role="assistant")
-        return JSONResponse({"started": True})
+        return JSONResponse({"started": True, "message": "Claude launched, /login sent, polling for OAuth URL"})
     except Exception as e:
         _save_portal_message(f"Auth start failed: tmux error — pane={pane}, err={e}", role="assistant")
         return JSONResponse({"error": f"tmux error: {e}"}, status_code=500)
