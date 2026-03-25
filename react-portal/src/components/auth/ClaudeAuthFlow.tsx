@@ -42,7 +42,6 @@ export function ClaudeAuthFlow() {
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [skipped, setSkipped] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
 
   const urlPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -200,7 +199,7 @@ export function ClaudeAuthFlow() {
   }, [setAuthenticated])
 
   // Render nothing if authenticated or skipped
-  if (authenticated || skipped) return null
+  if (authenticated) return null
   if (step === 'checking') return null
 
   return (
@@ -292,14 +291,6 @@ export function ClaudeAuthFlow() {
 
             {error && <div className="claude-auth-error">{error}</div>}
 
-            {step !== 'verifying' && step !== 'submitting-code' && (
-              <button
-                className="claude-auth-btn secondary"
-                onClick={() => setSkipped(true)}
-              >
-                Skip for now
-              </button>
-            )}
           </>
         )}
       </div>
