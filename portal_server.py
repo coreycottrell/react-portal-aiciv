@@ -1881,12 +1881,8 @@ async def api_claude_auth_start(request: Request) -> JSONResponse:
     pane = await _find_primary_pane_async()
     _save_portal_message(f"Auth flow started — checking Claude in {get_tmux_session()} (pane {pane})", role="assistant")
     try:
-        # CRITICAL: Resize to 500 cols before /login — OAuth URL must fit on one
-        # line so tmux capture-pane -J can reliably extract it without truncation.
-        await _run_subprocess_async(["tmux", "resize-window", "-t", pane, "-x", "500"])
-        await asyncio.sleep(0.3)
-
-        # Always launch claude /login (PureBrain pattern — fresh container assumption)
+        # Always launch claude /login at NATIVE terminal width — TUI menu must
+        # render at native width or arrow-key selection breaks.
         _save_portal_message("Starting Claude Code with /login...", role="assistant")
         launch_cmd = f"cd {Path.home()} && claude /login"
         r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
@@ -1907,6 +1903,13 @@ async def api_claude_auth_start(request: Request) -> JSONResponse:
         # Wait 3 MORE seconds for menu to render, then auto-select option 1 (web browser)
         await asyncio.sleep(3)
         await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+
+        # Resize to 500 cols AFTER menu selection — OAuth URL must fit on one line
+        # so tmux capture-pane -J can reliably extract it without truncation.
+        # Resize BEFORE /login breaks the TUI menu interaction.
+        await asyncio.sleep(1)
+        await _run_subprocess_async(["tmux", "resize-window", "-t", pane, "-x", "500"])
+        await asyncio.sleep(0.5)
 
         _save_portal_message("/login sent — waiting for OAuth URL to appear in terminal...", role="assistant")
         return JSONResponse({"started": True})
