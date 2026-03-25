@@ -1846,6 +1846,20 @@ async def _is_claude_running_in_pane(pane: str) -> bool:
     return "claude" in cmd or "node" in cmd
 
 
+async def _is_claude_running_async(pane: str) -> bool:
+    try:
+        r = await _run_subprocess_async(
+            ["tmux", "display-message", "-t", pane, "-p", "#{pane_current_command}"],
+            timeout=3
+        )
+        if r and r.stdout:
+            cmd = r.stdout.strip().lower()
+            return "claude" in cmd or "node" in cmd
+    except Exception:
+        pass
+    return False
+
+
 async def api_claude_auth_start(request: Request) -> JSONResponse:
     """Inject /login into the Claude tmux session to start OAuth flow.
 
@@ -1866,38 +1880,27 @@ async def api_claude_auth_start(request: Request) -> JSONResponse:
         await _run_subprocess_async(["tmux", "resize-window", "-t", pane, "-x", "500"])
         await asyncio.sleep(0.3)
 
-        claude_running = await _is_claude_running_in_pane(pane)
-        if not claude_running:
-            # v5: Claude is never pre-started. Launch it with /login from a safe CWD.
-            # CRITICAL: cd to home first — born containers don't have ~/civ, so a
-            # stale deleted CWD causes Node.js uv_cwd ENOENT and Claude exits silently.
-            _save_portal_message("Claude not running — starting Claude Code with /login...", role="assistant")
-            launch_cmd = f"cd {Path.home()} && claude /login"
-            r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
-            if r is None:
-                return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
-            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-            # Poll until Claude is the active process (up to 30 seconds)
-            started = False
-            for _ in range(60):
-                await asyncio.sleep(0.5)
-                if await _is_claude_running_in_pane(pane):
-                    started = True
-                    break
-            if not started:
-                _save_portal_message("Claude didn't start within 30s — proceeding anyway", role="assistant")
-            # Give the login menu time to render, then auto-select option 1 (web browser)
-            await asyncio.sleep(3)
-            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
-        else:
-            # Claude is already running — inject /login into existing session
-            _save_portal_message("Claude running — sending /login...", role="assistant")
-            r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", "/login"], check=True)
-            if r is None:
-                return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
-            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
-            await asyncio.sleep(2)
-            await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+        # Always launch claude /login (PureBrain pattern — fresh container assumption)
+        _save_portal_message("Starting Claude Code with /login...", role="assistant")
+        launch_cmd = f"cd {Path.home()} && claude /login"
+        r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
+        if r is None:
+            return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+
+        # Poll until Claude process is running (up to 30 seconds)
+        started = False
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            if await _is_claude_running_async(pane):
+                started = True
+                break
+        if not started:
+            _save_portal_message("Claude didn't start within 30s — proceeding anyway", role="assistant")
+
+        # Wait 3 MORE seconds for menu to render, then auto-select option 1 (web browser)
+        await asyncio.sleep(3)
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
 
         _save_portal_message("/login sent — waiting for OAuth URL to appear in terminal...", role="assistant")
         return JSONResponse({"started": True})
