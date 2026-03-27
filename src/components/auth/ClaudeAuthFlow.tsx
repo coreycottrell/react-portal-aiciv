@@ -1,5 +1,4 @@
 import { useEffect, useState, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { apiGet, apiPost } from '../../api/client'
 import { fireFirstBoot } from '../../api/evolution'
 import './ClaudeAuthFlow.css'
@@ -13,27 +12,20 @@ interface AuthStatus {
 
 type FlowStep = 'idle' | 'starting' | 'polling_url' | 'waiting_code' | 'submitting'
 
-export function ClaudeAuthFlow() {
-  const navigate = useNavigate()
-  const [status, setStatus] = useState<AuthStatus | null>(null)
+interface ClaudeAuthFlowProps {
+  /** Called when Claude auth succeeds and evolution has been fired.
+   *  Parent should unmount this component and navigate to terminal. */
+  onComplete: () => void
+}
+
+export function ClaudeAuthFlow({ onComplete }: ClaudeAuthFlowProps) {
   const [step, setStep] = useState<FlowStep>('idle')
   const [oauthUrl, setOauthUrl] = useState<string | null>(null)
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const fetchStatus = async () => {
-    try {
-      const s = await apiGet<AuthStatus>('/api/auth/status')
-      setStatus(s)
-      return s
-    } catch {
-      return null
-    }
-  }
-
   useEffect(() => {
-    fetchStatus()
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
@@ -69,25 +61,19 @@ export function ClaudeAuthFlow() {
     setError(null)
     try {
       await apiPost('/api/auth/code', { code: code.trim() })
-      // Poll status until authenticated, then fire evolution.
-      // Important: do NOT call fetchStatus() (which sets status.authenticated
-      // and causes the component to self-dismiss) until after evolution fires
-      // and we've navigated to the terminal view.
+      // Poll until Claude confirms authenticated
       pollRef.current = setInterval(async () => {
         try {
           const s = await apiGet<AuthStatus>('/api/auth/status')
           if (s?.authenticated) {
             clearInterval(pollRef.current!)
-            // Fire evolution in background — do NOT await. The server-side
-            // endpoint takes 30-45s (kills /login Claude, starts new Claude,
-            // waits for it, injects prompt). Awaiting it would block the
-            // overlay on screen the entire time.
-            fireFirstBoot().catch(() => {
-              // Server handles retry/error. Nothing the UI can do here.
-            })
-            // Dismiss overlay immediately and show terminal
-            navigate('/terminal')
-            setStatus(s)
+            pollRef.current = null
+            // Fire evolution in background — do NOT await.
+            // The server endpoint takes 30-45s. Fire and forget.
+            fireFirstBoot().catch(() => {})
+            // Tell parent to unmount us and show terminal.
+            // This is the ONLY path to dismissal — parent controls render.
+            onComplete()
           }
         } catch {
           // keep polling
@@ -98,9 +84,6 @@ export function ClaudeAuthFlow() {
       setStep('waiting_code')
     }
   }
-
-  // Not yet loaded or already authenticated
-  if (!status || status.authenticated) return null
 
   return (
     <div className="claude-auth-overlay">

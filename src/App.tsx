@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect } from 'react'
-import { HashRouter, Routes, Route } from 'react-router-dom'
+import { lazy, Suspense, useEffect, useState, useCallback } from 'react'
+import { HashRouter, Routes, Route, useNavigate } from 'react-router-dom'
 // Witness extension registry — Witness-only routes layered on top of base portal
 import { WITNESS_ROUTES } from './extensions'
 import { AuthGuard } from './components/auth/AuthGuard'
@@ -20,6 +20,7 @@ import { SheetsView } from './components/sheets/SheetsView'
 import { PointsView } from './components/points/PointsView'
 import { useIdentityStore } from './stores/identityStore'
 import { useSettingsStore } from './stores/settingsStore'
+import { apiGet } from './api/client'
 
 /** Runs identity + status fetches only after auth succeeds */
 function AuthenticatedApp() {
@@ -59,6 +60,33 @@ function AuthenticatedApp() {
   )
 }
 
+/** Inner app — has access to useNavigate (inside HashRouter) */
+function AppInner() {
+  const navigate = useNavigate()
+  // null = still checking, true = needs auth, false = already authed
+  const [needsClaudeAuth, setNeedsClaudeAuth] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    apiGet<{ authenticated: boolean }>('/api/auth/status')
+      .then(s => setNeedsClaudeAuth(!s.authenticated))
+      .catch(() => setNeedsClaudeAuth(false)) // If check fails, don't block portal
+  }, [])
+
+  const handleAuthComplete = useCallback(() => {
+    // Parent unmounts ClaudeAuthFlow — overlay gone instantly
+    setNeedsClaudeAuth(false)
+    // Navigate to terminal so human watches evolution
+    navigate('/terminal')
+  }, [navigate])
+
+  return (
+    <>
+      {needsClaudeAuth && <ClaudeAuthFlow onComplete={handleAuthComplete} />}
+      <AuthenticatedApp />
+    </>
+  )
+}
+
 export default function App() {
   const loadFromStorage = useSettingsStore(s => s.loadFromStorage)
 
@@ -69,10 +97,7 @@ export default function App() {
   return (
     <HashRouter>
       <AuthGuard>
-        <>
-          <ClaudeAuthFlow />
-          <AuthenticatedApp />
-        </>
+        <AppInner />
       </AuthGuard>
     </HashRouter>
   )
