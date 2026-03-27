@@ -11,7 +11,7 @@ interface AuthStatus {
   needs_human_auth?: boolean
 }
 
-type FlowStep = 'idle' | 'starting' | 'polling_url' | 'waiting_code' | 'submitting' | 'firing_evolution' | 'done'
+type FlowStep = 'idle' | 'starting' | 'polling_url' | 'waiting_code' | 'submitting'
 
 export function ClaudeAuthFlow() {
   const navigate = useNavigate()
@@ -78,18 +78,16 @@ export function ClaudeAuthFlow() {
           const s = await apiGet<AuthStatus>('/api/auth/status')
           if (s?.authenticated) {
             clearInterval(pollRef.current!)
-            setStep('firing_evolution')
-            try {
-              await fireFirstBoot()
-            } catch {
-              setError('Auth succeeded but failed to start evolution. Refresh and try again.')
-              return
-            }
-            // Navigate to terminal so human watches evolution happen
+            // Fire evolution in background — do NOT await. The server-side
+            // endpoint takes 30-45s (kills /login Claude, starts new Claude,
+            // waits for it, injects prompt). Awaiting it would block the
+            // overlay on screen the entire time.
+            fireFirstBoot().catch(() => {
+              // Server handles retry/error. Nothing the UI can do here.
+            })
+            // Dismiss overlay immediately and show terminal
             navigate('/terminal')
-            // Now let the component dismiss by updating status
             setStatus(s)
-            setStep('done')
           }
         } catch {
           // keep polling
@@ -166,16 +164,6 @@ export function ClaudeAuthFlow() {
 
         {step === 'submitting' && (
           <p className="claude-auth-status">Submitting code... verifying with Anthropic...</p>
-        )}
-
-        {step === 'firing_evolution' && (
-          <p className="claude-auth-status">Authenticated! Starting evolution...</p>
-        )}
-
-        {step === 'done' && (
-          <p className="claude-auth-status claude-auth-success">
-            Authenticated successfully! Your AiCIV is waking up...
-          </p>
         )}
       </div>
     </div>
