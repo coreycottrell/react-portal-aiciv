@@ -2267,7 +2267,7 @@ async def api_evolution_first_boot(request: Request) -> JSONResponse:
     started = False
     for _ in range(60):
         await asyncio.sleep(0.5)
-        if await _is_claude_running_in_pane(pane):
+        if await _is_claude_running_async(pane):
             started = True
             break
     if not started:
