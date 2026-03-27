@@ -1810,8 +1810,211 @@ async def api_boop_toggle(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# Claude OAuth Auth Endpoints
+# Claude OAuth Auth Endpoints — v2 (state machine, screen detection, retry)
 # ---------------------------------------------------------------------------
+
+# ── Screen detection patterns (compiled once) ──────────────────────────────
+_SCREEN_OAUTH_URL = re.compile(r'https://[^\s\x1b\x07\]]*oauth/authorize\?[^\s\x1b\x07\]]+')
+_SCREEN_LOGIN_MENU = re.compile(r'Select login method|Choose how to authenticate|Use a browser|Log in with')
+_SCREEN_CSAT_SURVEY = re.compile(r'How would you rate|survey|feedback.*experience', re.IGNORECASE)
+_SCREEN_UPDATE_PROMPT = re.compile(r'update available|Update now\?|Do you want to update|newer version', re.IGNORECASE)
+_SCREEN_TRUST_FOLDER = re.compile(r'Do you trust the files|trust this folder|Trust \w+ folder', re.IGNORECASE)
+_SCREEN_ERROR = re.compile(r'Error:|error occurred|ENOENT|EACCES|spawn.*ENOENT|Cannot find module', re.IGNORECASE)
+_SCREEN_LOGGED_IN = re.compile(r'Successfully authenticated|logged in|Authentication complete|You are now logged in', re.IGNORECASE)
+
+# Auth state machine states
+_AUTH_STATE_IDLE = "idle"
+_AUTH_STATE_STARTING = "starting"
+_AUTH_STATE_WAITING_MENU = "waiting_menu"
+_AUTH_STATE_WAITING_URL = "waiting_url"
+_AUTH_STATE_URL_READY = "url_ready"
+_AUTH_STATE_WAITING_CODE = "waiting_code"
+_AUTH_STATE_COMPLETE = "complete"
+_AUTH_STATE_FAILED = "failed"
+
+# Global auth state
+_auth_state = {
+    "state": _AUTH_STATE_IDLE,
+    "url": None,
+    "attempt": 0,
+    "max_attempts": 3,
+    "error": None,
+    "task": None,        # background asyncio task
+    "prewarmed": False,  # whether prewarm has run
+}
+_auth_state_lock = asyncio.Lock()
+
+
+async def _capture_screen(pane: str) -> str:
+    """Capture the current tmux pane content for screen detection."""
+    content = await _run_subprocess_output(
+        ["tmux", "capture-pane", "-t", pane, "-p", "-J", "-S", "-100"], timeout=5
+    )
+    return content or ""
+
+
+def _detect_screen(content: str) -> str:
+    """Classify what the tmux screen is currently showing.
+
+    Returns one of: 'oauth_url', 'login_menu', 'csat', 'update', 'trust',
+                    'error', 'logged_in', 'unknown'
+    """
+    if _SCREEN_OAUTH_URL.search(content):
+        return "oauth_url"
+    if _SCREEN_LOGGED_IN.search(content):
+        return "logged_in"
+    if _SCREEN_LOGIN_MENU.search(content):
+        return "login_menu"
+    if _SCREEN_CSAT_SURVEY.search(content):
+        return "csat"
+    if _SCREEN_UPDATE_PROMPT.search(content):
+        return "update"
+    if _SCREEN_TRUST_FOLDER.search(content):
+        return "trust"
+    if _SCREEN_ERROR.search(content):
+        return "error"
+    return "unknown"
+
+
+async def _dismiss_blocker(pane: str, screen_type: str) -> None:
+    """Auto-dismiss known blocking dialogs."""
+    if screen_type == "csat":
+        # Escape out of CSAT survey
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Escape"])
+        _save_portal_message("Dismissed CSAT survey", role="assistant")
+    elif screen_type == "update":
+        # Escape out of update prompt
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Escape"])
+        _save_portal_message("Dismissed update prompt", role="assistant")
+    elif screen_type == "trust":
+        # Accept trust folder with y + Enter
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "y"])
+        await asyncio.sleep(0.2)
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+        _save_portal_message("Accepted trust folder prompt", role="assistant")
+
+
+async def _kill_claude_in_pane(pane: str) -> None:
+    """Send double Ctrl-C to kill Claude in the given pane."""
+    await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "C-c"])
+    await asyncio.sleep(0.3)
+    await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "C-c"])
+    await asyncio.sleep(1.0)
+
+
+async def _auth_state_machine(pane: str) -> dict:
+    """Run the auth state machine: start /login, detect screens, extract URL.
+
+    Returns {"url": str} on success or {"error": str} on failure.
+    """
+    global _auth_state
+
+    for attempt in range(1, _auth_state["max_attempts"] + 1):
+        _auth_state["attempt"] = attempt
+        _auth_state["state"] = _AUTH_STATE_STARTING
+        _auth_state["url"] = None
+        _auth_state["error"] = None
+
+        _save_portal_message(
+            f"Auth attempt {attempt}/{_auth_state['max_attempts']} — starting Claude /login...",
+            role="assistant"
+        )
+
+        # Kill any existing Claude first (clean slate)
+        if attempt > 1:
+            await _kill_claude_in_pane(pane)
+            await asyncio.sleep(1.0)
+
+        # Launch claude /login from safe CWD
+        launch_cmd = f"cd {Path.home()} && claude /login"
+        r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
+        if r is None:
+            _auth_state["error"] = "tmux send-keys timed out"
+            continue
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+
+        # Wait for Claude to start (up to 30s)
+        _auth_state["state"] = _AUTH_STATE_WAITING_MENU
+        started = False
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            if await _is_claude_running_async(pane):
+                started = True
+                break
+        if not started:
+            _save_portal_message(f"Attempt {attempt}: Claude didn't start within 30s", role="assistant")
+            continue
+
+        # Poll screen every 0.5s for up to 60s, handling blockers
+        _auth_state["state"] = _AUTH_STATE_WAITING_MENU
+        menu_selected = False
+        url_found = False
+        poll_deadline = time.time() + 60
+
+        while time.time() < poll_deadline:
+            await asyncio.sleep(0.5)
+            content = await _capture_screen(pane)
+            screen = _detect_screen(content)
+
+            if screen == "oauth_url":
+                # Extract the URL
+                match = _SCREEN_OAUTH_URL.search(content)
+                if match:
+                    candidate = match.group(0).strip()
+                    if "state=" in candidate:
+                        _auth_state["url"] = candidate
+                        _auth_state["state"] = _AUTH_STATE_URL_READY
+                        _save_portal_message(
+                            f"OAuth URL captured ({len(candidate)} chars, state= confirmed)",
+                            role="assistant"
+                        )
+                        url_found = True
+                        break
+                    else:
+                        # URL truncated — resize and retry capture
+                        await _run_subprocess_async(
+                            ["tmux", "resize-window", "-t", pane, "-x", "500"]
+                        )
+                        await asyncio.sleep(0.5)
+
+            elif screen == "login_menu" and not menu_selected:
+                # Select first option (web browser)
+                _save_portal_message("Login menu detected — selecting web browser option", role="assistant")
+                await asyncio.sleep(1.0)
+                await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
+                menu_selected = True
+                _auth_state["state"] = _AUTH_STATE_WAITING_URL
+                # Resize after menu selection so URL fits on one line
+                await asyncio.sleep(1.0)
+                await _run_subprocess_async(
+                    ["tmux", "resize-window", "-t", pane, "-x", "500"]
+                )
+
+            elif screen in ("csat", "update", "trust"):
+                await _dismiss_blocker(pane, screen)
+                await asyncio.sleep(1.0)
+
+            elif screen == "logged_in":
+                _auth_state["state"] = _AUTH_STATE_COMPLETE
+                _save_portal_message("Already authenticated!", role="assistant")
+                return {"url": None, "already_authed": True}
+
+            elif screen == "error":
+                _save_portal_message(f"Attempt {attempt}: error detected on screen", role="assistant")
+                break
+
+        if url_found:
+            return {"url": _auth_state["url"]}
+
+        # Attempt failed — will retry
+        _save_portal_message(f"Attempt {attempt} failed — {'retrying' if attempt < _auth_state['max_attempts'] else 'giving up'}", role="assistant")
+
+    # All attempts exhausted
+    _auth_state["state"] = _AUTH_STATE_FAILED
+    _auth_state["error"] = f"Failed after {_auth_state['max_attempts']} attempts"
+    return {"error": _auth_state["error"]}
+
+
 async def api_claude_auth_status(request: Request) -> JSONResponse:
     """Check if Claude is authenticated (has valid OAuth credentials)."""
     if not check_auth(request):
@@ -1843,79 +2046,57 @@ async def api_claude_auth_status(request: Request) -> JSONResponse:
         return JSONResponse({"authenticated": False, "account": None, "expires_at": None})
 
 
-async def _is_claude_running_in_pane(pane: str) -> bool:
-    """Check if Claude Code is the active process in the given tmux pane."""
-    out = await _run_subprocess_output(
-        ["tmux", "display-message", "-t", pane, "-p", "#{pane_current_command}"]
-    )
-    cmd = out.strip().lower()
-    return "claude" in cmd or "node" in cmd
-
-
-async def _is_claude_running_async(pane: str) -> bool:
+async def _run_auth_background(pane: str) -> None:
+    """Background task that runs the auth state machine and stores the result."""
+    global _auth_state
     try:
-        r = await _run_subprocess_async(
-            ["tmux", "display-message", "-t", pane, "-p", "#{pane_current_command}"],
-            timeout=3
-        )
-        if r and r.stdout:
-            cmd = r.stdout.strip().lower()
-            return "claude" in cmd or "node" in cmd
-    except Exception:
-        pass
-    return False
+        result = await _auth_state_machine(pane)
+        if "error" in result:
+            _auth_state["state"] = _AUTH_STATE_FAILED
+            _auth_state["error"] = result["error"]
+        elif result.get("already_authed"):
+            _auth_state["state"] = _AUTH_STATE_COMPLETE
+        else:
+            _auth_state["state"] = _AUTH_STATE_URL_READY
+    except Exception as e:
+        _auth_state["state"] = _AUTH_STATE_FAILED
+        _auth_state["error"] = str(e)
 
 
 async def api_claude_auth_start(request: Request) -> JSONResponse:
-    """Inject /login into the Claude tmux session to start OAuth flow.
+    """Start the auth state machine. Runs in background, poll /api/auth/url for result.
 
-    If Claude Code is not running in the pane (v5 architecture — no pre-start),
-    launches Claude with /login from a safe CWD. Born containers don't have
-    ~/civ, so the pane may have a stale deleted CWD that causes Node.js to
-    crash with uv_cwd ENOENT. Always cd to home first.
+    The state machine handles: screen detection, blocker dismissal, menu selection,
+    OAuth URL capture, and retry (up to 3x with kill+restart).
     """
     if not check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    global _captured_oauth_url
-    _captured_oauth_url = None
+
+    global _auth_state
+
+    async with _auth_state_lock:
+        # If already running, don't double-start
+        if _auth_state["task"] and not _auth_state["task"].done():
+            return JSONResponse({
+                "started": True,
+                "state": _auth_state["state"],
+                "attempt": _auth_state["attempt"],
+                "message": "Auth already in progress"
+            })
+
+        # Reset state
+        _auth_state["state"] = _AUTH_STATE_STARTING
+        _auth_state["url"] = None
+        _auth_state["attempt"] = 0
+        _auth_state["error"] = None
+
     pane = await _find_primary_pane_async()
-    _save_portal_message(f"Auth flow started — checking Claude in {get_tmux_session()} (pane {pane})", role="assistant")
-    try:
-        # Always launch claude /login at NATIVE terminal width — TUI menu must
-        # render at native width or arrow-key selection breaks.
-        _save_portal_message("Starting Claude Code with /login...", role="assistant")
-        launch_cmd = f"cd {Path.home()} && claude /login"
-        r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
-        if r is None:
-            return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
-        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+    _save_portal_message(f"Auth flow v2 started — state machine with screen detection (pane {pane})", role="assistant")
 
-        # Poll until Claude process is running (up to 30 seconds)
-        started = False
-        for _ in range(60):
-            await asyncio.sleep(0.5)
-            if await _is_claude_running_async(pane):
-                started = True
-                break
-        if not started:
-            _save_portal_message("Claude didn't start within 30s — proceeding anyway", role="assistant")
+    # Launch background task
+    _auth_state["task"] = asyncio.create_task(_run_auth_background(pane))
 
-        # Wait 3 MORE seconds for menu to render, then auto-select option 1 (web browser)
-        await asyncio.sleep(3)
-        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
-
-        # Resize to 500 cols AFTER menu selection — OAuth URL must fit on one line
-        # so tmux capture-pane -J can reliably extract it without truncation.
-        # Resize BEFORE /login breaks the TUI menu interaction.
-        await asyncio.sleep(1)
-        await _run_subprocess_async(["tmux", "resize-window", "-t", pane, "-x", "500"])
-        await asyncio.sleep(0.5)
-
-        _save_portal_message("/login sent — waiting for OAuth URL to appear in terminal...", role="assistant")
-        return JSONResponse({"started": True})
-    except Exception as e:
-        _save_portal_message(f"Auth start failed: tmux error — pane={pane}, err={e}", role="assistant")
-        return JSONResponse({"error": f"tmux error: {e}"}, status_code=500)
+    return JSONResponse({"started": True, "state": _AUTH_STATE_STARTING})
 
 
 async def api_claude_auth_code(request: Request) -> JSONResponse:
@@ -1936,6 +2117,9 @@ async def api_claude_auth_code(request: Request) -> JSONResponse:
         if r is None:
             return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
         await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+
+        # Update state
+        _auth_state["state"] = _AUTH_STATE_WAITING_CODE
         _save_portal_message("Code injected — Claude is authenticating...", role="assistant")
         return JSONResponse({"injected": True})
     except Exception as e:
@@ -1944,35 +2128,78 @@ async def api_claude_auth_code(request: Request) -> JSONResponse:
 
 
 async def api_claude_auth_url(request: Request) -> JSONResponse:
-    """Poll for the captured OAuth URL from tmux output."""
+    """Poll for the auth state machine result. Returns URL when ready,
+    or current state/attempt info for progress display."""
     if not check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    global _captured_oauth_url
-    if _captured_oauth_url:
-        return JSONResponse({"url": _captured_oauth_url, "ready": True})
+
+    state = _auth_state["state"]
+    url = _auth_state.get("url")
+
+    if url:
+        return JSONResponse({"url": url, "ready": True, "state": state})
+
+    if state == _AUTH_STATE_COMPLETE:
+        return JSONResponse({"url": None, "ready": True, "state": state, "already_authed": True})
+
+    if state == _AUTH_STATE_FAILED:
+        return JSONResponse({
+            "url": None, "ready": False, "state": state,
+            "error": _auth_state.get("error", "unknown"),
+            "attempt": _auth_state["attempt"],
+        })
+
+    return JSONResponse({
+        "url": None, "ready": False, "state": state,
+        "attempt": _auth_state["attempt"],
+    })
+
+
+async def api_claude_auth_prewarm(request: Request) -> JSONResponse:
+    """Pre-warm: start Claude /login on page load before human clicks auth.
+
+    This gives Claude a head start launching so the OAuth URL appears faster
+    when the human actually clicks "Authenticate". Idempotent — calling
+    multiple times is safe.
+    """
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    global _auth_state
+
+    # Skip if already prewarmed or auth is in progress
+    if _auth_state["prewarmed"]:
+        return JSONResponse({"prewarmed": True, "message": "Already prewarmed"})
+    if _auth_state["task"] and not _auth_state["task"].done():
+        return JSONResponse({"prewarmed": True, "message": "Auth already in progress"})
+
+    # Check if already authenticated — no need to prewarm
+    if CREDENTIALS_FILE.exists():
+        try:
+            creds = json.loads(CREDENTIALS_FILE.read_text())
+            oauth = creds.get("claudeAiOauth", {})
+            if oauth.get("accessToken"):
+                return JSONResponse({"prewarmed": False, "message": "Already authenticated"})
+        except Exception:
+            pass
+
     pane = await _find_primary_pane_async()
-    try:
-        # -J joins wrapped lines so long URLs aren't truncated at terminal width
-        content = await _run_subprocess_output(
-            ["tmux", "capture-pane", "-t", pane, "-p", "-J", "-S", "-200"], timeout=5
-        )
-        if not content:
-            return JSONResponse({"url": None, "ready": False})
-        match = OAUTH_URL_PATTERN.search(content)
-        if match:
-            candidate = match.group(0).strip()
-            # Validate URL is complete — must contain state= parameter.
-            # A truncated URL is worse than no URL (causes "missing state" error on claude.ai).
-            if "state=" not in candidate:
-                _save_portal_message("OAuth URL found but truncated (missing state=) — retrying capture", role="assistant")
-            else:
-                _captured_oauth_url = candidate
-                _save_portal_message(f"OAuth URL ready ({len(candidate)} chars, state= confirmed)", role="assistant")
-                return JSONResponse({"url": _captured_oauth_url, "ready": True})
-        # Silently return — no notification on each poll. Only notify when URL is found.
-    except Exception as e:
-        _save_portal_message(f"tmux capture failed: {e}", role="assistant")
-    return JSONResponse({"url": None, "ready": False})
+
+    # If Claude is already running, skip prewarm
+    if await _is_claude_running_async(pane):
+        _auth_state["prewarmed"] = True
+        return JSONResponse({"prewarmed": True, "message": "Claude already running"})
+
+    # Launch claude /login in background (same as auth start, but just the launch)
+    _save_portal_message("Pre-warming Claude /login for faster auth...", role="assistant")
+    launch_cmd = f"cd {Path.home()} && claude /login"
+    r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
+    if r is None:
+        return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
+    await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+
+    _auth_state["prewarmed"] = True
+    return JSONResponse({"prewarmed": True, "message": "Claude /login pre-warming started"})
 
 
 # ---------------------------------------------------------------------------
@@ -2016,13 +2243,11 @@ async def api_evolution_status(request: Request) -> JSONResponse:
 
 
 async def api_evolution_first_boot(request: Request) -> JSONResponse:
-    """Launch a fresh Claude session and trigger first-visit evolution.
+    """Transition from /login Claude to evolution Claude in the SAME pane.
 
-    After OAuth auth completes, the /login Claude instance is temporary.
-    This endpoint:
-      1. Kills the /login Claude session
-      2. Launches a fresh claude --dangerously-skip-permissions session
-      3. Injects the awakening prompt into the new session
+    Uses double Ctrl-C to gracefully exit the /login Claude instance,
+    then launches evolution Claude in the same tmux pane. This keeps
+    the portal terminal view on a single pane throughout.
 
     Guards: skips if already evolved or already fired this session.
     """
@@ -2038,48 +2263,50 @@ async def api_evolution_first_boot(request: Request) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"error": f"could not write marker: {e}"}, status_code=500)
 
-    # Step 1: Kill any existing {civ}-primary-* sessions (the /login instance)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    tmux_session = f"{CIV_NAME}-primary-{timestamp}"
+    pane = await _find_primary_pane_async()
     project_dir = str(Path.home())
-    try:
-        old = await _run_subprocess_output(
-            ["tmux", "list-sessions", "-F", "#{session_name}"], timeout=3
-        )
-        if old:
-            for s in old.splitlines():
-                if s.startswith(f"{CIV_NAME}-primary-"):
-                    await _run_subprocess_async(["tmux", "kill-session", "-t", s])
-    except Exception:
-        pass
 
-    # Step 2: Write session name so portal can track it
+    # Step 1: Double Ctrl-C to kill the /login Claude instance in the same pane
+    _save_portal_message("Auth complete — transitioning to evolution (same pane)...", role="assistant")
+    await _kill_claude_in_pane(pane)
+
+    # Step 2: Wait for Claude to exit (up to 10s)
+    exited = False
+    for _ in range(20):
+        await asyncio.sleep(0.5)
+        if not await _is_claude_running_async(pane):
+            exited = True
+            break
+    if not exited:
+        _save_portal_message("Claude /login didn't exit cleanly — force-killing", role="assistant")
+        await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "C-c"])
+        await asyncio.sleep(2.0)
+
+    # Step 3: Launch fresh Claude session in the SAME pane (no new tmux session)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    tmux_session = get_tmux_session()
+    launch_cmd = f"cd {project_dir} && claude --dangerously-skip-permissions"
+    r = await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "-l", launch_cmd], check=True)
+    if r is None:
+        return JSONResponse({"error": "tmux send-keys timed out"}, status_code=500)
+    await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+
+    # Write session marker for tracking
     marker = Path.home() / ".current_session"
     marker.write_text(tmux_session)
 
-    # Step 3: Launch fresh Claude session (no --resume — first birth has no prior session)
-    _save_portal_message("Auth complete — launching Claude session for evolution...", role="assistant")
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: subprocess.Popen(
-        ["tmux", "new-session", "-d", "-s", tmux_session, "-c", project_dir,
-         "claude --dangerously-skip-permissions"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    ))
-
-    # Step 4: Wait for Claude to start in the new session (up to 30 seconds)
+    # Step 4: Wait for Claude to start in the pane (up to 30 seconds)
     started = False
     for _ in range(60):
         await asyncio.sleep(0.5)
-        pane = await _find_primary_pane_async()
-        if pane and await _is_claude_running_in_pane(pane):
+        if await _is_claude_running_in_pane(pane):
             started = True
             break
     if not started:
         _save_portal_message("Claude session didn't confirm within 30s — proceeding with evolution anyway", role="assistant")
 
-    # Step 5: Inject the awakening prompt into the new session
+    # Step 5: Inject the awakening prompt
     prompt_text = _extract_evolution_prompt(FIRST_BOOT_SKILL_PATH, FIRST_BOOT_PROMPT_PATH)
-    pane = await _find_primary_pane_async()
     _save_portal_message("Evolution started — your AI is waking up and reading your conversation...", role="assistant")
     try:
         r = await _run_subprocess_async(
@@ -2090,7 +2317,7 @@ async def api_evolution_first_boot(request: Request) -> JSONResponse:
         await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
         await asyncio.sleep(0.5)
         await _run_subprocess_async(["tmux", "send-keys", "-t", pane, "Enter"])
-        return JSONResponse({"status": "fired", "message": "Evolution started"})
+        return JSONResponse({"status": "fired", "message": "Evolution started (same-pane transition)"})
     except Exception as e:
         _save_portal_message(f"Evolution injection failed: {e}", role="assistant")
         return JSONResponse({"error": f"tmux error: {e}"}, status_code=500)
@@ -7269,6 +7496,7 @@ routes = [
     Route("/api/auth/start", endpoint=api_claude_auth_start, methods=["POST"]),
     Route("/api/auth/code", endpoint=api_claude_auth_code, methods=["POST"]),
     Route("/api/auth/url", endpoint=api_claude_auth_url),
+    Route("/api/auth/prewarm", endpoint=api_claude_auth_prewarm, methods=["POST"]),
     Route("/api/evolution/status", endpoint=api_evolution_status),
     Route("/api/evolution/first-boot", endpoint=api_evolution_first_boot, methods=["POST"]),
     Route("/api/resume", endpoint=api_resume, methods=["POST"]),
