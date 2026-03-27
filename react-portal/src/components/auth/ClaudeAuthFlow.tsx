@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { apiGet, apiPost } from '../../api/client'
-import { fetchEvolutionStatus, fireFirstBoot } from '../../api/evolution'
+import { fireFirstBoot } from '../../api/evolution'
 import './ClaudeAuthFlow.css'
 
 interface AuthStatusResponse {
@@ -34,8 +34,6 @@ type FlowStep =
   | 'submitting-code'
   | 'verifying'
   | 'success'
-  | 'evolving'
-  | 'evolved'
 
 export function ClaudeAuthFlow() {
   const [step, setStep] = useState<FlowStep>('checking')
@@ -46,8 +44,6 @@ export function ClaudeAuthFlow() {
 
   const urlPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const evolutionPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const clearPolls = useCallback(() => {
     if (urlPollRef.current) {
@@ -57,14 +53,6 @@ export function ClaudeAuthFlow() {
     if (statusPollRef.current) {
       clearInterval(statusPollRef.current)
       statusPollRef.current = null
-    }
-    if (successTimerRef.current) {
-      clearTimeout(successTimerRef.current)
-      successTimerRef.current = null
-    }
-    if (evolutionPollRef.current) {
-      clearInterval(evolutionPollRef.current)
-      evolutionPollRef.current = null
     }
   }, [])
 
@@ -148,10 +136,11 @@ export function ClaudeAuthFlow() {
                 clearInterval(statusPollRef.current)
                 statusPollRef.current = null
               }
-              setStep('success')
-              successTimerRef.current = setTimeout(() => {
-                triggerEvolution()
-              }, 2000)
+              // Auth confirmed — fire evolution and dismiss immediately.
+              // Do NOT wait for evolution to complete (takes 10+ min).
+              // Human watches evolution in terminal/chat.
+              fireFirstBoot().catch(() => {})
+              setAuthenticated(true)
             }
           } catch {
             // Keep polling on transient errors
@@ -164,39 +153,7 @@ export function ClaudeAuthFlow() {
     }
   }, [code])
 
-  const triggerEvolution = useCallback(async () => {
-    setStep('evolving')
-    try {
-      const evoStatus = await fetchEvolutionStatus()
-      if (evoStatus.status === 'complete') {
-        setStep('evolved')
-        setTimeout(() => setAuthenticated(true), 1500)
-        return
-      }
-      if (evoStatus.status === 'pending') {
-        await fireFirstBoot()
-      }
-      // Poll evolution status every 5 seconds
-      evolutionPollRef.current = setInterval(async () => {
-        try {
-          const poll = await fetchEvolutionStatus()
-          if (poll.status === 'complete') {
-            if (evolutionPollRef.current) {
-              clearInterval(evolutionPollRef.current)
-              evolutionPollRef.current = null
-            }
-            setStep('evolved')
-            setTimeout(() => setAuthenticated(true), 1500)
-          }
-        } catch {
-          // Keep polling on transient errors
-        }
-      }, 5000)
-    } catch {
-      // If evolution endpoints fail, still let user through
-      setAuthenticated(true)
-    }
-  }, [setAuthenticated])
+  // triggerEvolution removed — fire-and-forget in submitCode, dismiss immediately
 
   // Render nothing if authenticated or skipped
   if (authenticated) return null
@@ -205,14 +162,7 @@ export function ClaudeAuthFlow() {
   return (
     <div className="claude-auth-overlay">
       <div className="claude-auth-box">
-        {step === 'evolved' ? (
-          <div className="claude-auth-success">{'\u2705'} Your AI is ready! Say hello in the chat below.</div>
-        ) : step === 'evolving' ? (
-          <div className="claude-auth-status">
-            <span className="claude-auth-spinner" />
-            Your AI is waking up... reading your conversation and preparing to meet you.
-          </div>
-        ) : step === 'success' ? (
+        {step === 'success' ? (
           <div className="claude-auth-success">{'\u2705'} Claude authenticated successfully!</div>
         ) : (
           <>
