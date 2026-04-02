@@ -50,6 +50,9 @@ export function DocsView() {
     loadDocs, createDoc, updateDoc, deleteDoc,
   } = useDocsStore()
 
+  // Sort state
+  const [sortMode, setSortMode] = useState<'recent' | 'alpha'>('recent')
+
   // Edit state
   const [editTitle, setEditTitle] = useState('')
   const [editContent, setEditContent] = useState('')
@@ -78,15 +81,28 @@ export function DocsView() {
   }, [editing, selectedDoc])
 
   const filteredDocs = useMemo(() => {
-    if (!search) return docs
-    const q = search.toLowerCase()
-    return docs.filter(
-      (d) =>
-        d.title.toLowerCase().includes(q) ||
-        d.tags?.some((t) => t.toLowerCase().includes(q)) ||
-        d.content?.toLowerCase().includes(q),
-    )
-  }, [docs, search])
+    let result = docs
+    if (search) {
+      const q = search.toLowerCase()
+      result = result.filter(
+        (d) =>
+          d.title.toLowerCase().includes(q) ||
+          d.tags?.some((t) => t.toLowerCase().includes(q)) ||
+          d.content?.toLowerCase().includes(q),
+      )
+    }
+    const sorted = [...result]
+    if (sortMode === 'alpha') {
+      sorted.sort((a, b) => a.title.localeCompare(b.title))
+    } else {
+      sorted.sort((a, b) => {
+        const ta = a.updated_at || a.created_at || ''
+        const tb = b.updated_at || b.created_at || ''
+        return tb.localeCompare(ta)
+      })
+    }
+    return sorted
+  }, [docs, search, sortMode])
 
   const handleSelect = useCallback(
     (doc: typeof docs[0]) => {
@@ -178,6 +194,14 @@ export function DocsView() {
                 {v}
               </option>
             ))}
+          </select>
+          <select
+            className="docs-sort-filter"
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as 'recent' | 'alpha')}
+          >
+            <option value="recent">Recent first</option>
+            <option value="alpha">A — Z</option>
           </select>
         </div>
 

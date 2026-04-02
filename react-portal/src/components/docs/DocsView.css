@@ -90,6 +90,18 @@
   outline: none;
 }
 
+.docs-sort-filter {
+  padding: 7px 8px;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  outline: none;
+}
+
 /* ── Doc list ────────────────────────────────────────── */
 
 .docs-loading {
