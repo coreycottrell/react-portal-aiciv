@@ -3,6 +3,11 @@ import { useMailStore } from '../../stores/mailStore'
 import { useBookmarkStore } from '../../stores/bookmarkStore'
 import { cn } from '../../utils/cn'
 import { WITNESS_NAV_ITEMS } from '../../extensions'
+// TGIM integration — bundle delivered via separate PR from Keel (puretechnyc team).
+// Once vendor/tgim/tgim.js lands, add:
+//   import { TGIM_NAV_ITEMS } from '../../../vendor/tgim/tgim'
+// and render alongside WITNESS_NAV_ITEMS below.
+// See vendor/tgim/README.md for the expected bundle contract.
 import './Sidebar.css'
 
 const NAV_ITEMS = [

@@ -2,6 +2,11 @@ import { lazy, Suspense, useEffect, useState, useCallback } from 'react'
 import { HashRouter, Routes, Route, useNavigate } from 'react-router-dom'
 // Witness extension registry — Witness-only routes layered on top of base portal
 import { WITNESS_ROUTES } from './extensions'
+// TGIM integration — bundle delivered via separate PR from Keel (puretechnyc team).
+// Once vendor/tgim/tgim.js lands, add:
+//   import { TGIM_ROUTES } from '../vendor/tgim/tgim'
+// and map alongside WITNESS_ROUTES in the Routes block below.
+// See vendor/tgim/README.md for the expected bundle contract.
 import { AuthGuard } from './components/auth/AuthGuard'
 import { ClaudeAuthFlow } from './components/auth/ClaudeAuthFlow'
 import { AppShell } from './components/layout/AppShell'

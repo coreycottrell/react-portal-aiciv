@@ -7368,6 +7368,94 @@ async def api_hub_reply_to_post(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# TGIM proxy endpoints
+#
+# Integration with TGIM v4.x (Russell Korus's ops dashboard). Auth strategy:
+# Option B — service key + user email passthrough. Portal proxy authenticates
+# to TGIM backend via shared service key, passes portal user's email as
+# X-TGIM-User for identity resolution on the backend side.
+#
+# Parallax allowlists the portal's outbound IP as a second auth layer, so
+# only this portal can hit the TGIM backend with the shared service key.
+# ---------------------------------------------------------------------------
+TGIM_BACKEND_URL = _read_env_key("TGIM_BACKEND_URL") or "http://157.230.191.4:8089"
+TGIM_SERVICE_KEY = _read_env_key("TGIM_SERVICE_KEY") or ""
+TGIM_DEFAULT_USER_EMAIL = _read_env_key("TGIM_DEFAULT_USER_EMAIL") or "alex@puretechnology.nyc"
+
+
+def _tgim_headers(user_email: str | None = None) -> dict:
+    """Build headers for TGIM backend requests (service key + user identity)."""
+    return {
+        "X-TGIM-Service-Key": TGIM_SERVICE_KEY,
+        "X-TGIM-User": user_email or TGIM_DEFAULT_USER_EMAIL,
+        "Content-Type": "application/json",
+    }
+
+
+def _tgim_upstream_url(path: str) -> str:
+    """Rewrite /api/tgim/<rest> to <TGIM_BACKEND_URL>/api/v1/<rest>."""
+    trimmed = path.removeprefix("/api/tgim/").removeprefix("/api/tgim")
+    return f"{TGIM_BACKEND_URL}/api/v1/{trimmed}"
+
+
+async def api_tgim_proxy(request: Request) -> JSONResponse:
+    """Generic catch-all proxy for /api/tgim/* → TGIM backend /api/v1/*.
+
+    - Enforces portal bearer auth (check_auth).
+    - Injects X-TGIM-Service-Key (shared secret) and X-TGIM-User (email).
+    - Forwards HTTP method, query params, and JSON body (for POST/PUT/PATCH).
+    - Returns 503 if TGIM_SERVICE_KEY is not configured.
+    - Returns 504 on upstream timeout, 502 on other upstream errors.
+    """
+    if not check_auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    if not TGIM_SERVICE_KEY:
+        return JSONResponse(
+            {"error": "TGIM_SERVICE_KEY not configured"},
+            status_code=503,
+        )
+
+    upstream_url = _tgim_upstream_url(request.url.path)
+    headers = _tgim_headers()
+    params = dict(request.query_params)
+    method = request.method.upper()
+
+    # Only read body for methods that carry one
+    body = None
+    if method in ("POST", "PUT", "PATCH"):
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.request(
+                method=method,
+                url=upstream_url,
+                headers=headers,
+                params=params,
+                json=body if body is not None else None,
+            )
+
+            # Try to parse as JSON, fall back to raw text wrapped in a dict
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"raw": resp.text}
+
+            return JSONResponse(data, status_code=resp.status_code)
+
+    except httpx.TimeoutException:
+        print(f"[tgim] Timeout proxying {method} {upstream_url}")
+        return JSONResponse({"error": "TGIM backend timeout"}, status_code=504)
+    except Exception as e:
+        print(f"[tgim] Proxy error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
+# ---------------------------------------------------------------------------
 # AgentBrowser proxy
 # ---------------------------------------------------------------------------
 BROWSER_URL = os.environ.get("BROWSER_URL", "http://localhost:8099")
@@ -7574,6 +7662,12 @@ routes = [
     Route("/api/hub/rooms/{room_id}/threads", endpoint=api_hub_create_thread, methods=["POST"]),
     Route("/api/hub/threads/{thread_id}/posts", endpoint=api_hub_create_post, methods=["POST"]),
     Route("/api/hub/posts/{post_id}/replies", endpoint=api_hub_reply_to_post, methods=["POST"]),
+    # TGIM proxy — catch-all for /api/tgim/* → TGIM backend /api/v1/*
+    Route(
+        "/api/tgim/{path:path}",
+        endpoint=api_tgim_proxy,
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    ),
     Route("/api/browser/{action}", endpoint=api_browser_proxy, methods=["GET", "POST"]),
     WebSocketRoute("/ws/chat", endpoint=ws_chat),
     WebSocketRoute("/ws/terminal", endpoint=ws_terminal),
