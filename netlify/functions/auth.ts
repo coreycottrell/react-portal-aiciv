@@ -10,6 +10,7 @@
 
 import { Handler } from '@netlify/functions'
 import { SignJWT, importJWK } from 'jose'
+import { createPrivateKey } from 'crypto'
 
 const ACG_CIV_ID = process.env.ACG_CIV_ID || 'acg'
 const ACG_PRIVATE_KEY_B64 = process.env.ACG_PRIVATE_KEY_B64 // Base64-encoded 32-byte Ed25519 seed
@@ -39,13 +40,17 @@ export const handler: Handler = async (event, context) => {
       }
     }
 
-    // Import Ed25519 private key from base64 seed
+    // Derive Ed25519 keypair from 32-byte seed using Node crypto
+    // DER prefix for Ed25519 PKCS8: 302e020100300506032b657004220420
     const seed = Buffer.from(ACG_PRIVATE_KEY_B64, 'base64')
-    const privateKey = await importJWK({
-      kty: 'OKP',
-      crv: 'Ed25519',
-      d: seed.toString('base64url'),
-    }, 'EdDSA')
+    const derPrefix = Buffer.from('302e020100300506032b657004220420', 'hex')
+    const keyObj = createPrivateKey({
+      key: Buffer.concat([derPrefix, seed]),
+      format: 'der',
+      type: 'pkcs8',
+    })
+    const jwk = keyObj.export({ format: 'jwk' })
+    const privateKey = await importJWK(jwk, 'EdDSA')
 
     // Generate JWT with short expiry
     const now = Math.floor(Date.now() / 1000)
