@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@netlify/functions": "^5.2.0",
     "date-fns": "^4.1.0",
     "jose": "^6.0.0",
     "react": "^19.2.4",
