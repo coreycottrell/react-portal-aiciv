@@ -3,7 +3,16 @@ import { useMailStore } from '../../stores/mailStore'
 import { useBookmarkStore } from '../../stores/bookmarkStore'
 import { cn } from '../../utils/cn'
 import { WITNESS_NAV_ITEMS } from '../../extensions'
+// TGIM v4.x nav items — sourced from the vendored bundle (Keel team)
+// @ts-ignore — vendored ES module without type declarations
+import { TGIM_NAV_ITEMS } from '../../../vendor/tgim/tgim.js'
 import './Sidebar.css'
+
+interface TgimNavItem {
+  to: string
+  icon: string
+  label: string
+}
 
 const NAV_ITEMS = [
   { to: '/', icon: '\u{1F4AC}', label: 'Chat' },
@@ -47,6 +56,13 @@ export function Sidebar() {
         ))}
         {/* Witness extensions — injected from extensions.ts, only present in Witness's local build */}
         {WITNESS_NAV_ITEMS.map(item => (
+          <NavLink key={item.to} to={item.to} className={({ isActive }) => cn('sidebar-link', isActive && 'sidebar-link-active')}>
+            <span className="sidebar-icon">{item.icon}</span>
+            <span className="sidebar-label">{item.label}</span>
+          </NavLink>
+        ))}
+        {/* TGIM nav items — sourced from the vendored bundle */}
+        {TGIM_NAV_ITEMS.map((item: TgimNavItem) => (
           <NavLink key={item.to} to={item.to} className={({ isActive }) => cn('sidebar-link', isActive && 'sidebar-link-active')}>
             <span className="sidebar-icon">{item.icon}</span>
             <span className="sidebar-label">{item.label}</span>
