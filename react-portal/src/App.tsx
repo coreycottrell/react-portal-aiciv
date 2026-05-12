@@ -18,6 +18,7 @@ import { SheetsView } from './components/sheets/SheetsView'
 import { HubView } from './components/hub/HubView'
 import { PointsView } from './components/points/PointsView'
 import { BrowserView } from './components/browser/BrowserView'
+import { TgimView } from './components/tgim/TgimView'
 import { useIdentityStore } from './stores/identityStore'
 import { useSettingsStore } from './stores/settingsStore'
 
@@ -51,6 +52,7 @@ function AuthenticatedApp() {
         <Route path="/sheets" element={<SheetsView />} />
         <Route path="/hub" element={<HubView />} />
         <Route path="/browser" element={<BrowserView />} />
+        <Route path="/tgim" element={<TgimView />} />
         <Route path="/status" element={<StatusView />} />
         <Route path="/settings" element={<SettingsView />} />
       </Route>
