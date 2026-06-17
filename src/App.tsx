@@ -1,7 +1,14 @@
-import { lazy, Suspense, useEffect, useState, useCallback } from 'react'
+import { lazy, Suspense, useEffect, useState, useCallback, type ComponentType } from 'react'
 import { HashRouter, Routes, Route, useNavigate } from 'react-router-dom'
 // Witness extension registry — Witness-only routes layered on top of base portal
 import { WITNESS_ROUTES } from './extensions'
+// TGIM v4.x integration bundle (Russell Korus / Parallax + Keel)
+// Bundle source: vendor/tgim/tgim.js — built and shipped by Keel team
+// Auth flows through portal_server.py /api/tgim/* proxy with X-TGIM-Service-Key + X-TGIM-User headers
+// CSS scoped to .tgim-scope to avoid bleeding into portal styles
+// @ts-ignore — vendored ES module without type declarations
+import { TGIM_ROUTES } from '../vendor/tgim/tgim.js'
+import '../vendor/tgim/tgim.css'
 import { AuthGuard } from './components/auth/AuthGuard'
 import { ClaudeAuthFlow } from './components/auth/ClaudeAuthFlow'
 import { AppShell } from './components/layout/AppShell'
@@ -56,6 +63,23 @@ function AuthenticatedApp() {
         {WITNESS_ROUTES.map(r => {
           const Panel = lazy(r.component)
           return <Route key={r.path} path={r.path} element={<Suspense fallback={null}><Panel /></Suspense>} />
+        })}
+        {/* TGIM extensions — pages rendered through the bundle, scoped to .tgim-scope */}
+        {TGIM_ROUTES.map((r: { path: string; component: () => Promise<{ default: ComponentType }> }) => {
+          const Panel = lazy(r.component)
+          return (
+            <Route
+              key={r.path}
+              path={r.path}
+              element={
+                <Suspense fallback={null}>
+                  <div className="tgim-scope">
+                    <Panel />
+                  </div>
+                </Suspense>
+              }
+            />
+          )
         })}
       </Route>
     </Routes>
