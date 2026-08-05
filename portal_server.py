@@ -384,8 +384,17 @@ def _find_all_project_jsonl():
                 continue
             for jf in proj_dir.glob("*.jsonl"):
                 try:
+                    # Bug #1771 (chat-blind): a dangling/broken .jsonl symlink
+                    # makes stat() raise. Without a per-file guard the whole
+                    # session-log sort throws and silently blinds the entire
+                    # chat transcript (team/tmux view keeps working). Skip the
+                    # bad entry AND log it — never let one file blind all chat.
+                    if jf.is_symlink() and not jf.exists():
+                        print(f"[portal] chat-blind guard: skipping broken session-log symlink: {jf}")
+                        continue
                     all_logs.append((jf.stat().st_mtime, jf))
-                except OSError:
+                except OSError as e:
+                    print(f"[portal] chat-blind guard: skipping unreadable session log {jf}: {e}")
                     continue
         all_logs.sort(key=lambda x: x[0], reverse=True)
     except Exception:
