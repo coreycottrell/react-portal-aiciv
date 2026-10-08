@@ -17,3 +17,15 @@ scheduled_tasks.json.migrated
 
 # Local Netlify folder
 .netlify
+
+# P23 secrets hygiene (2026-10-08): live state/secrets must never be committed
+.fleet-secret
+.portal-human-auth
+.claude/
+referrals.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env.*
+*.pem
+*.key
