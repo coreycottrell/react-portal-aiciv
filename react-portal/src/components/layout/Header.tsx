@@ -3,6 +3,7 @@ import { useIdentityStore } from '../../stores/identityStore'
 import { StatusBadge } from '../common/StatusBadge'
 import { apiGet } from '../../api/client'
 import { Link } from 'react-router-dom'
+import { ReconnectClaudeButton } from '../auth/ReconnectClaudeButton'
 import './Header.css'
 
 interface ContextSnapshot {
@@ -84,6 +85,7 @@ export function Header() {
             <CtxRing pct={ctx.pct} />
           </Link>
         )}
+        <ReconnectClaudeButton />
         <StatusBadge
           status={claudeStatus}
           label={claudeStatus === 'online' ? 'Active' : 'Offline'}
